@@ -2437,6 +2437,9 @@ async def main_async():
             ))
             logging.getLogger().addHandler(handler)
 
+    # Reduce aiohttp access log verbosity (only log warnings/errors)
+    logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+
     # Get server configuration
     server_config = config.config.get("server", {})
     http_config = server_config.get("http", {})
