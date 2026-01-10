@@ -1890,7 +1890,7 @@ async def handle_health(request):
     """Health check endpoint"""
     try:
         # Simple health check - verify we can list pools
-        pools = zpool_instance.list()
+        pools = await zfs.pool_list()
         return web.json_response({
             "status": "healthy",
             "pools": len(pools),
