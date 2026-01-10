@@ -2429,15 +2429,16 @@ async def main_async():
     if "logging" in config.config:
         log_config = config.config["logging"]
         logging.getLogger().setLevel(getattr(logging, log_config.get("level", "INFO")))
-        
+
         if "file" in log_config:
             handler = logging.FileHandler(log_config["file"])
             handler.setFormatter(logging.Formatter(
                 '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
             ))
             logging.getLogger().addHandler(handler)
-    
-    # Server config already initialized above
+
+    # Get server configuration
+    server_config = config.config.get("server", {})
     http_config = server_config.get("http", {})
     tcp_config = server_config.get("tcp", {})
     unix_config = server_config.get("unix", {})
