@@ -11,7 +11,6 @@ import os
 import sys
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +22,7 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from prometheus_client import Counter, Histogram, generate_latest
 
-from zfs import zfs, zpool, zdb
+from zfs_commands import AsyncZFS
 # Legacy socket servers - replaced by token-authenticated versions
 # from zfs_tcp_socketserver import ZFSTCPSocketServer
 # from zfs_socketserver import run_socketserver
@@ -47,9 +46,7 @@ api_duration = Histogram('zfs_api_request_duration_seconds', 'API request durati
 active_operations = Counter('zfs_api_active_operations', 'Currently active operations')
 
 # Global instances
-zfs_instance = zfs()
-zpool_instance = zpool()
-executor = None  # Will be initialized in main_async with config value
+zfs = AsyncZFS()  # Unified async ZFS executor
 unix_socket_server = None  # Will be initialized during startup
 tcp_socket_server = None  # Will be initialized during startup
 token_manager = None  # Will be initialized during startup
@@ -198,16 +195,6 @@ def require_auth(f):
     
     return wrapper
 
-def async_wrapper(sync_func):
-    """Wrap synchronous function to run in executor"""
-    async def wrapper(*args, **kwargs):
-        loop = asyncio.get_event_loop()
-        # run_in_executor doesn't support kwargs, so we need to use functools.partial
-        from functools import partial
-        func_with_kwargs = partial(sync_func, *args, **kwargs)
-        return await loop.run_in_executor(executor, func_with_kwargs)
-    return wrapper
-
 # Authentication methods
 @method
 async def auth_login(context: Dict[str, Any], username: str, password: str) -> Result:
@@ -231,14 +218,14 @@ async def dataset_create(context: Dict[str, Any], dataset: str, properties: Opti
     try:
         api_requests.labels(method="dataset_create", status="started").inc()
         with api_duration.labels(method="dataset_create").time():
-            rc = await async_wrapper(zfs_instance.create)(dataset, property=properties)
-            
-        if rc == 0:
+            result = await zfs.dataset_create(dataset, properties)
+
+        if result.success:
             api_requests.labels(method="dataset_create", status="success").inc()
             return Success({"dataset": dataset, "created": True})
         else:
             api_requests.labels(method="dataset_create", status="failed").inc()
-            return Error(-32010, f"Failed to create dataset: return code {rc}")
+            return Error(-32010, f"Failed to create dataset: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="dataset_create", status="error").inc()
         logger.exception(f"Error creating dataset {dataset}")
@@ -251,14 +238,14 @@ async def dataset_destroy(context: Dict[str, Any], dataset: str, recursive: bool
     try:
         api_requests.labels(method="dataset_destroy", status="started").inc()
         with api_duration.labels(method="dataset_destroy").time():
-            rc = await async_wrapper(zfs_instance.destroy)(dataset, recurse=recursive)
-            
-        if rc == 0:
+            result = await zfs.dataset_destroy(dataset, recursive)
+
+        if result.success:
             api_requests.labels(method="dataset_destroy", status="success").inc()
             return Success({"dataset": dataset, "destroyed": True})
         else:
             api_requests.labels(method="dataset_destroy", status="failed").inc()
-            return Error(-32012, f"Failed to destroy dataset: return code {rc}")
+            return Error(-32012, f"Failed to destroy dataset: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="dataset_destroy", status="error").inc()
         logger.exception(f"Error destroying dataset {dataset}")
@@ -271,8 +258,8 @@ async def dataset_list(context: Dict[str, Any], dataset: Optional[str] = None) -
     try:
         api_requests.labels(method="dataset_list", status="started").inc()
         with api_duration.labels(method="dataset_list").time():
-            datasets = await async_wrapper(zfs_instance.list)(dataset)
-            
+            datasets = await zfs.dataset_list(dataset)
+
         api_requests.labels(method="dataset_list", status="success").inc()
         return Success({"datasets": datasets})
     except Exception as e:
@@ -287,12 +274,8 @@ async def dataset_get_properties(context: Dict[str, Any], dataset: str, property
     try:
         api_requests.labels(method="dataset_get_properties", status="started").inc()
         with api_duration.labels(method="dataset_get_properties").time():
-            if property == "all":
-                props = await async_wrapper(zfs_instance.get_all)(dataset)
-            else:
-                value = await async_wrapper(zfs_instance.get)(dataset, property)
-                props = {property: value}
-                
+            props = await zfs.dataset_get_properties(dataset, property)
+
         api_requests.labels(method="dataset_get_properties", status="success").inc()
         return Success({"dataset": dataset, "properties": props})
     except Exception as e:
@@ -307,14 +290,14 @@ async def dataset_set_property(context: Dict[str, Any], dataset: str, property: 
     try:
         api_requests.labels(method="dataset_set_property", status="started").inc()
         with api_duration.labels(method="dataset_set_property").time():
-            rc = await async_wrapper(zfs_instance.set)(dataset, property, value)
-            
-        if rc == 0:
+            result = await zfs.dataset_set_property(dataset, property, value)
+
+        if result.success:
             api_requests.labels(method="dataset_set_property", status="success").inc()
             return Success({"dataset": dataset, "property": property, "value": value})
         else:
             api_requests.labels(method="dataset_set_property", status="failed").inc()
-            return Error(-32016, f"Failed to set property: return code {rc}")
+            return Error(-32016, f"Failed to set property: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="dataset_set_property", status="error").inc()
         logger.exception(f"Error setting property {property} on dataset {dataset}")
@@ -327,8 +310,8 @@ async def dataset_get_space(context: Dict[str, Any], dataset: str) -> Result:
     try:
         api_requests.labels(method="dataset_get_space", status="started").inc()
         with api_duration.labels(method="dataset_get_space").time():
-            space = await async_wrapper(zfs_instance.get_space)(dataset)
-            
+            space = await zfs.dataset_get_space(dataset)
+
         api_requests.labels(method="dataset_get_space", status="success").inc()
         return Success({"dataset": dataset, "space": space})
     except Exception as e:
@@ -342,28 +325,20 @@ async def dataset_mount(context: Dict[str, Any], dataset: str) -> Result:
     """Mount a ZFS dataset"""
     try:
         api_requests.labels(method="dataset_mount", status="started").inc()
-        
-        # Use subprocess directly to get stderr
-        cmd = ["zfs", "mount", dataset]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode == 0:
+        result = await zfs.dataset_mount(dataset)
+
+        if result.success:
             api_requests.labels(method="dataset_mount", status="success").inc()
             return Success({"dataset": dataset, "mounted": True})
         else:
-            stderr_text = stderr.decode('utf-8', errors='replace').lower()
+            stderr_text = result.stderr.lower()
             # Check if error is because it's already mounted
             if 'already mounted' in stderr_text or 'filesystem already mounted' in stderr_text:
                 api_requests.labels(method="dataset_mount", status="success").inc()
                 return Success({"dataset": dataset, "mounted": True, "already_mounted": True})
             else:
                 api_requests.labels(method="dataset_mount", status="failed").inc()
-                return Error(-32019, f"Failed to mount dataset: {stderr.decode('utf-8', errors='replace').strip()}")
+                return Error(-32019, f"Failed to mount dataset: {result.stderr.strip()}")
     except Exception as e:
         api_requests.labels(method="dataset_mount", status="error").inc()
         logger.exception(f"Error mounting dataset {dataset}")
@@ -377,14 +352,14 @@ async def snapshot_create(context: Dict[str, Any], dataset: str, name: str, recu
     try:
         api_requests.labels(method="snapshot_create", status="started").inc()
         with api_duration.labels(method="snapshot_create").time():
-            rc = await async_wrapper(zfs_instance.snapshot)(dataset, name, recurse=recursive)
-            
-        if rc == 0:
+            result = await zfs.snapshot_create(dataset, name, recursive)
+
+        if result.success:
             api_requests.labels(method="snapshot_create", status="success").inc()
             return Success({"dataset": dataset, "snapshot": name, "created": True})
         else:
             api_requests.labels(method="snapshot_create", status="failed").inc()
-            return Error(-32021, f"Failed to create snapshot: return code {rc}")
+            return Error(-32021, f"Failed to create snapshot: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_create", status="error").inc()
         logger.exception(f"Error creating snapshot {name} for dataset {dataset}")
@@ -392,20 +367,20 @@ async def snapshot_create(context: Dict[str, Any], dataset: str, name: str, recu
 
 @method
 @require_auth
-async def snapshot_create_auto(context: Dict[str, Any], dataset: str, tag: str, tag1: Optional[str] = None, 
+async def snapshot_create_auto(context: Dict[str, Any], dataset: str, tag: str, tag1: Optional[str] = None,
                               recursive: bool = False) -> Result:
     """Create an auto-named snapshot"""
     try:
         api_requests.labels(method="snapshot_create_auto", status="started").inc()
         with api_duration.labels(method="snapshot_create_auto").time():
-            rc, name = await async_wrapper(zfs_instance.snapshot_auto)(dataset, tag, tag1, recurse=recursive)
-            
-        if rc == 0:
+            result, name = await zfs.snapshot_create_auto(dataset, tag, tag1, recursive)
+
+        if result.success:
             api_requests.labels(method="snapshot_create_auto", status="success").inc()
             return Success({"dataset": dataset, "snapshot": name, "created": True})
         else:
             api_requests.labels(method="snapshot_create_auto", status="failed").inc()
-            return Error(-32023, f"Failed to create auto snapshot: return code {rc}")
+            return Error(-32023, f"Failed to create auto snapshot: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_create_auto", status="error").inc()
         logger.exception(f"Error creating auto snapshot for dataset {dataset}")
@@ -418,8 +393,8 @@ async def snapshot_list(context: Dict[str, Any], dataset: str) -> Result:
     try:
         api_requests.labels(method="snapshot_list", status="started").inc()
         with api_duration.labels(method="snapshot_list").time():
-            snapshots = await async_wrapper(zfs_instance.get_snapshots)(dataset)
-            
+            snapshots = await zfs.snapshot_list(dataset)
+
         api_requests.labels(method="snapshot_list", status="success").inc()
         return Success({"dataset": dataset, "snapshots": snapshots})
     except Exception as e:
@@ -435,14 +410,14 @@ async def snapshot_destroy(context: Dict[str, Any], dataset: str, snapshot: str,
         api_requests.labels(method="snapshot_destroy", status="started").inc()
         full_snapshot = f"{dataset}@{snapshot}"
         with api_duration.labels(method="snapshot_destroy").time():
-            rc = await async_wrapper(zfs_instance.destroy)(full_snapshot, recurse=recursive)
-            
-        if rc == 0:
+            result = await zfs.snapshot_destroy(dataset, snapshot, recursive)
+
+        if result.success:
             api_requests.labels(method="snapshot_destroy", status="success").inc()
             return Success({"snapshot": full_snapshot, "destroyed": True})
         else:
             api_requests.labels(method="snapshot_destroy", status="failed").inc()
-            return Error(-32026, f"Failed to destroy snapshot: return code {rc}")
+            return Error(-32026, f"Failed to destroy snapshot: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_destroy", status="error").inc()
         logger.exception(f"Error destroying snapshot {snapshot} for dataset {dataset}")
@@ -455,14 +430,14 @@ async def snapshot_rollback(context: Dict[str, Any], dataset: str, snapshot: str
     try:
         api_requests.labels(method="snapshot_rollback", status="started").inc()
         with api_duration.labels(method="snapshot_rollback").time():
-            rc = await async_wrapper(zfs_instance.rollback)(dataset, snapshot)
-            
-        if rc == 0:
+            result = await zfs.snapshot_rollback(dataset, snapshot)
+
+        if result.success:
             api_requests.labels(method="snapshot_rollback", status="success").inc()
             return Success({"dataset": dataset, "snapshot": snapshot, "rolled_back": True})
         else:
             api_requests.labels(method="snapshot_rollback", status="failed").inc()
-            return Error(-32028, f"Failed to rollback: return code {rc}")
+            return Error(-32028, f"Failed to rollback: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_rollback", status="error").inc()
         logger.exception(f"Error rolling back to snapshot {snapshot} for dataset {dataset}")
@@ -470,20 +445,20 @@ async def snapshot_rollback(context: Dict[str, Any], dataset: str, snapshot: str
 
 @method
 @require_auth
-async def snapshot_hold(context: Dict[str, Any], dataset: str, snapshot: str, tag: str, 
+async def snapshot_hold(context: Dict[str, Any], dataset: str, snapshot: str, tag: str,
                        recursive: bool = False) -> Result:
     """Place a hold on a snapshot"""
     try:
         api_requests.labels(method="snapshot_hold", status="started").inc()
         with api_duration.labels(method="snapshot_hold").time():
-            rc = await async_wrapper(zfs_instance.hold)(dataset, snapshot, tag, recurse=recursive)
-            
-        if rc == 0:
+            result = await zfs.snapshot_hold(dataset, snapshot, tag, recursive)
+
+        if result.success:
             api_requests.labels(method="snapshot_hold", status="success").inc()
             return Success({"dataset": dataset, "snapshot": snapshot, "hold": tag})
         else:
             api_requests.labels(method="snapshot_hold", status="failed").inc()
-            return Error(-32030, f"Failed to hold snapshot: return code {rc}")
+            return Error(-32030, f"Failed to hold snapshot: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_hold", status="error").inc()
         logger.exception(f"Error holding snapshot {snapshot} for dataset {dataset}")
@@ -491,20 +466,20 @@ async def snapshot_hold(context: Dict[str, Any], dataset: str, snapshot: str, ta
 
 @method
 @require_auth
-async def snapshot_release(context: Dict[str, Any], dataset: str, snapshot: str, tag: str, 
+async def snapshot_release(context: Dict[str, Any], dataset: str, snapshot: str, tag: str,
                           recursive: bool = False) -> Result:
     """Release a hold on a snapshot"""
     try:
         api_requests.labels(method="snapshot_release", status="started").inc()
         with api_duration.labels(method="snapshot_release").time():
-            rc = await async_wrapper(zfs_instance.release)(dataset, snapshot, tag, recurse=recursive)
-            
-        if rc == 0:
+            result = await zfs.snapshot_release(dataset, snapshot, tag, recursive)
+
+        if result.success:
             api_requests.labels(method="snapshot_release", status="success").inc()
             return Success({"dataset": dataset, "snapshot": snapshot, "released": tag})
         else:
             api_requests.labels(method="snapshot_release", status="failed").inc()
-            return Error(-32032, f"Failed to release snapshot: return code {rc}")
+            return Error(-32032, f"Failed to release snapshot: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="snapshot_release", status="error").inc()
         logger.exception(f"Error releasing snapshot {snapshot} for dataset {dataset}")
@@ -512,14 +487,14 @@ async def snapshot_release(context: Dict[str, Any], dataset: str, snapshot: str,
 
 @method
 @require_auth
-async def snapshot_holds_list(context: Dict[str, Any], dataset: str, snapshot: str, 
+async def snapshot_holds_list(context: Dict[str, Any], dataset: str, snapshot: str,
                              recursive: bool = False) -> Result:
     """List holds on a snapshot"""
     try:
         api_requests.labels(method="snapshot_holds_list", status="started").inc()
         with api_duration.labels(method="snapshot_holds_list").time():
-            holds = await async_wrapper(zfs_instance.holds)(dataset, snapshot, recurse=recursive)
-            
+            holds = await zfs.snapshot_list_holds(dataset, snapshot, recursive)
+
         api_requests.labels(method="snapshot_holds_list", status="success").inc()
         return Success({"dataset": dataset, "snapshot": snapshot, "holds": holds})
     except Exception as e:
@@ -531,12 +506,12 @@ async def snapshot_holds_list(context: Dict[str, Any], dataset: str, snapshot: s
 @require_auth
 async def snapshot_diff(context: Dict[str, Any], snapshot1: str, snapshot2: Optional[str] = None) -> Result:
     """Compare differences between snapshots or between a snapshot and current filesystem
-    
+
     Args:
         snapshot1: First snapshot (format: dataset@snapshot)
         snapshot2: Second snapshot (optional, format: dataset@snapshot)
                   If not provided, compares snapshot1 with current filesystem
-    
+
     Returns:
         Dictionary with:
         - new: List of new files/directories [(path, type), ...]
@@ -546,11 +521,11 @@ async def snapshot_diff(context: Dict[str, Any], snapshot1: str, snapshot2: Opti
     """
     try:
         api_requests.labels(method="snapshot_diff", status="started").inc()
-        
+
         with api_duration.labels(method="snapshot_diff").time():
             # Call the diff method from zfs module
-            new, modified, err, renamed = await async_wrapper(zfs_instance.diff)(snapshot1, snapshot2)
-            
+            new, modified, deleted, renamed = await zfs.snapshot_diff(snapshot1, snapshot2)
+
             # Format the response
             result = {
                 "snapshot1": snapshot1,
@@ -558,22 +533,22 @@ async def snapshot_diff(context: Dict[str, Any], snapshot1: str, snapshot2: Opti
                 "changes": {
                     "new": [{"path": path, "type": ftype} for path, ftype in new],
                     "modified": [{"path": path, "type": ftype} for path, ftype in modified],
-                    "deleted": [{"path": path, "type": ftype} for path, ftype in err],  # 'err' means deleted files
-                    "renamed": [{"old_path": old_path, "new_path": new_path, "type": ftype} 
+                    "deleted": [{"path": path, "type": ftype} for path, ftype in deleted],
+                    "renamed": [{"old_path": old_path, "new_path": new_path, "type": ftype}
                                for old_path, new_path, ftype in renamed]
                 },
                 "summary": {
                     "new_count": len(new),
                     "modified_count": len(modified),
-                    "deleted_count": len(err),
+                    "deleted_count": len(deleted),
                     "renamed_count": len(renamed),
-                    "total_changes": len(new) + len(modified) + len(err) + len(renamed)
+                    "total_changes": len(new) + len(modified) + len(deleted) + len(renamed)
                 }
             }
-        
+
         api_requests.labels(method="snapshot_diff", status="success").inc()
         return Success(result)
-        
+
     except Exception as e:
         api_requests.labels(method="snapshot_diff", status="error").inc()
         logger.exception(f"Error comparing snapshots {snapshot1} and {snapshot2}")
@@ -586,27 +561,15 @@ async def bookmark_create(context: Dict[str, Any], snapshot: str, bookmark: str)
     """Create a bookmark from a snapshot"""
     try:
         api_requests.labels(method="bookmark_create", status="started").inc()
-        
-        # Build command
-        cmd = ["zfs", "bookmark", snapshot, bookmark]
-        
-        # Execute
-        loop = asyncio.get_event_loop()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode == 0:
+        result = await zfs.bookmark_create(snapshot, bookmark)
+
+        if result.success:
             api_requests.labels(method="bookmark_create", status="success").inc()
             return Success({"snapshot": snapshot, "bookmark": bookmark, "created": True})
         else:
             api_requests.labels(method="bookmark_create", status="failed").inc()
-            return Error(-32035, f"Failed to create bookmark: {stderr.decode('utf-8')}")
-            
+            return Error(-32035, f"Failed to create bookmark: {result.stderr}")
+
     except Exception as e:
         api_requests.labels(method="bookmark_create", status="error").inc()
         logger.exception(f"Error creating bookmark from {snapshot}")
@@ -618,33 +581,11 @@ async def bookmark_list(context: Dict[str, Any], dataset: str) -> Result:
     """List bookmarks for a dataset"""
     try:
         api_requests.labels(method="bookmark_list", status="started").inc()
-        
-        # Build command to list bookmarks
-        cmd = ["zfs", "list", "-t", "bookmark", "-H", "-o", "name", "-r", dataset]
-        
-        # Execute
-        loop = asyncio.get_event_loop()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode == 0:
-            # Parse bookmarks
-            bookmarks = []
-            for line in stdout.decode('utf-8').strip().split('\n'):
-                if line and '#' in line:  # Bookmarks contain #
-                    bookmarks.append(line)
-                    
-            api_requests.labels(method="bookmark_list", status="success").inc()
-            return Success({"dataset": dataset, "bookmarks": bookmarks})
-        else:
-            api_requests.labels(method="bookmark_list", status="failed").inc()
-            return Error(-32037, f"Failed to list bookmarks: {stderr.decode('utf-8')}")
-            
+        bookmarks = await zfs.bookmark_list(dataset)
+
+        api_requests.labels(method="bookmark_list", status="success").inc()
+        return Success({"dataset": dataset, "bookmarks": bookmarks})
+
     except Exception as e:
         api_requests.labels(method="bookmark_list", status="error").inc()
         logger.exception(f"Error listing bookmarks for {dataset}")
@@ -656,27 +597,15 @@ async def bookmark_destroy(context: Dict[str, Any], bookmark: str) -> Result:
     """Destroy a bookmark"""
     try:
         api_requests.labels(method="bookmark_destroy", status="started").inc()
-        
-        # Build command
-        cmd = ["zfs", "destroy", bookmark]
-        
-        # Execute
-        loop = asyncio.get_event_loop()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode == 0:
+        result = await zfs.bookmark_destroy(bookmark)
+
+        if result.success:
             api_requests.labels(method="bookmark_destroy", status="success").inc()
             return Success({"bookmark": bookmark, "destroyed": True})
         else:
             api_requests.labels(method="bookmark_destroy", status="failed").inc()
-            return Error(-32039, f"Failed to destroy bookmark: {stderr.decode('utf-8')}")
-            
+            return Error(-32039, f"Failed to destroy bookmark: {result.stderr}")
+
     except Exception as e:
         api_requests.labels(method="bookmark_destroy", status="error").inc()
         logger.exception(f"Error destroying bookmark {bookmark}")
@@ -690,8 +619,8 @@ async def pool_list(context: Dict[str, Any]) -> Result:
     try:
         api_requests.labels(method="pool_list", status="started").inc()
         with api_duration.labels(method="pool_list").time():
-            pools = await async_wrapper(zpool_instance.list)()
-            
+            pools = await zfs.pool_list()
+
         api_requests.labels(method="pool_list", status="success").inc()
         return Success({"pools": pools})
     except Exception as e:
@@ -706,12 +635,8 @@ async def pool_get_properties(context: Dict[str, Any], pool: str, property: str 
     try:
         api_requests.labels(method="pool_get_properties", status="started").inc()
         with api_duration.labels(method="pool_get_properties").time():
-            if property == "all":
-                props = await async_wrapper(zpool_instance.get_all)(pool)
-            else:
-                value = await async_wrapper(zpool_instance.get)(pool, property)
-                props = {property: value}
-                
+            props = await zfs.pool_get_properties(pool, property)
+
         api_requests.labels(method="pool_get_properties", status="success").inc()
         return Success({"pool": pool, "properties": props})
     except Exception as e:
@@ -726,14 +651,14 @@ async def pool_scrub_start(context: Dict[str, Any], pool: str) -> Result:
     try:
         api_requests.labels(method="pool_scrub_start", status="started").inc()
         with api_duration.labels(method="pool_scrub_start").time():
-            rc = await async_wrapper(zpool_instance.start_scrub)(pool)
-            
-        if rc == 0:
+            result = await zfs.pool_scrub_start(pool)
+
+        if result.success:
             api_requests.labels(method="pool_scrub_start", status="success").inc()
             return Success({"pool": pool, "scrub": "started"})
         else:
             api_requests.labels(method="pool_scrub_start", status="failed").inc()
-            return Error(-32042, f"Failed to start scrub: return code {rc}")
+            return Error(-32042, f"Failed to start scrub: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="pool_scrub_start", status="error").inc()
         logger.exception(f"Error starting scrub on pool {pool}")
@@ -746,14 +671,14 @@ async def pool_scrub_stop(context: Dict[str, Any], pool: str) -> Result:
     try:
         api_requests.labels(method="pool_scrub_stop", status="started").inc()
         with api_duration.labels(method="pool_scrub_stop").time():
-            rc = await async_wrapper(zpool_instance.stop_scrub)(pool)
-            
-        if rc == 0:
+            result = await zfs.pool_scrub_stop(pool)
+
+        if result.success:
             api_requests.labels(method="pool_scrub_stop", status="success").inc()
             return Success({"pool": pool, "scrub": "stopped"})
         else:
             api_requests.labels(method="pool_scrub_stop", status="failed").inc()
-            return Error(-32044, f"Failed to stop scrub: return code {rc}")
+            return Error(-32044, f"Failed to stop scrub: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="pool_scrub_stop", status="error").inc()
         logger.exception(f"Error stopping scrub on pool {pool}")
@@ -766,15 +691,13 @@ async def pool_status(context: Dict[str, Any], pool: str) -> Result:
     try:
         api_requests.labels(method="pool_status", status="started").inc()
         with api_duration.labels(method="pool_status").time():
-            zdb_inst = await async_wrapper(lambda: zdb())()
-            operation, progress = await async_wrapper(zdb_inst.get_operation_progress)(pool)
-            
+            status_result = await zfs.pool_status(pool)
+
         result = {
             "pool": pool,
-            "operation": operation,
-            "progress": progress
+            "status": status_result.stdout if status_result.success else status_result.stderr
         }
-        
+
         api_requests.labels(method="pool_status", status="success").inc()
         return Success(result)
     except Exception as e:
@@ -785,20 +708,20 @@ async def pool_status(context: Dict[str, Any], pool: str) -> Result:
 # Clone operations
 @method
 @require_auth
-async def clone_create(context: Dict[str, Any], source: str, target: str, 
+async def clone_create(context: Dict[str, Any], source: str, target: str,
                       properties: Optional[Dict[str, str]] = None) -> Result:
     """Create a clone from a snapshot"""
     try:
         api_requests.labels(method="clone_create", status="started").inc()
         with api_duration.labels(method="clone_create").time():
-            rc = await async_wrapper(zfs_instance.clone)(source, target, property=properties)
-            
-        if rc == 0:
+            result = await zfs.clone_create(source, target, properties)
+
+        if result.success:
             api_requests.labels(method="clone_create", status="success").inc()
             return Success({"source": source, "clone": target, "created": True})
         else:
             api_requests.labels(method="clone_create", status="failed").inc()
-            return Error(-32050, f"Failed to create clone: return code {rc}")
+            return Error(-32050, f"Failed to create clone: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="clone_create", status="error").inc()
         logger.exception(f"Error creating clone from {source} to {target}")
@@ -807,30 +730,24 @@ async def clone_create(context: Dict[str, Any], source: str, target: str,
 # Volume operations
 @method
 @require_auth
-async def volume_create(context: Dict[str, Any], dataset: str, size_gb: Optional[int] = None, 
-                       size_bytes: Optional[int] = None, compression: str = "lz4", 
+async def volume_create(context: Dict[str, Any], dataset: str, size_gb: Optional[int] = None,
+                       size_bytes: Optional[int] = None, compression: str = "lz4",
                        volblocksize: str = "8K") -> Result:
     """Create a ZFS volume"""
     try:
         api_requests.labels(method="volume_create", status="started").inc()
+        if not size_gb and not size_bytes:
+            return Error(-32052, "Either size_gb or size_bytes must be specified")
+
         with api_duration.labels(method="volume_create").time():
-            if size_gb:
-                rc = await async_wrapper(zfs_instance.zvol_create)(
-                    dataset, size=size_gb, compression=compression, volblocksize=volblocksize
-                )
-            elif size_bytes:
-                rc = await async_wrapper(zfs_instance.zvol_create)(
-                    dataset, bytes=size_bytes, compression=compression, volblocksize=volblocksize
-                )
-            else:
-                return Error(-32052, "Either size_gb or size_bytes must be specified")
-            
-        if rc == 0:
+            result = await zfs.volume_create(dataset, size_gb, size_bytes, compression, volblocksize)
+
+        if result.success:
             api_requests.labels(method="volume_create", status="success").inc()
             return Success({"volume": dataset, "created": True})
         else:
             api_requests.labels(method="volume_create", status="failed").inc()
-            return Error(-32053, f"Failed to create volume: return code {rc}")
+            return Error(-32053, f"Failed to create volume: {result.stderr}")
     except Exception as e:
         api_requests.labels(method="volume_create", status="error").inc()
         logger.exception(f"Error creating volume {dataset}")
@@ -843,8 +760,8 @@ async def volume_list(context: Dict[str, Any]) -> Result:
     try:
         api_requests.labels(method="volume_list", status="started").inc()
         with api_duration.labels(method="volume_list").time():
-            volumes = await async_wrapper(zfs_instance.list_volumes)()
-            
+            volumes = await zfs.volume_list()
+
         api_requests.labels(method="volume_list", status="success").inc()
         return Success({"volumes": volumes})
     except Exception as e:
@@ -2508,14 +2425,6 @@ def start_token_unix_socket_server(socket_path, token_manager):
 
 async def main_async():
     """Async main to run both servers"""
-    global executor
-    
-    # Initialize thread pool executor
-    server_config = config.config.get("server", {})
-    workers = server_config.get("workers", 20)
-    executor = ThreadPoolExecutor(max_workers=workers)
-    logger.info(f"Initialized thread pool with {workers} workers")
-    
     # Set up logging
     if "logging" in config.config:
         log_config = config.config["logging"]
