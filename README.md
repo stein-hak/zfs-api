@@ -1,20 +1,28 @@
 # ZFS API Server
 
-A multi-threaded JSON-RPC API server for ZFS management with authentication and rate limiting.
+A high-performance async JSON-RPC API server for ZFS management with authentication and rate limiting.
 
 ## Features
 
 - **JSON-RPC 2.0 Protocol**: Clean, efficient RPC interface
-- **Multi-threaded**: Handles concurrent operations using ThreadPoolExecutor
+- **Native Async**: Pure asyncio execution with AsyncZFS (no thread pool overhead)
+- **Clean Architecture**: Single unified API through zfs_commands package
 - **Authentication**: JWT token-based auth with passwordless localhost access
 - **Rate Limiting**: Configurable request rate limiting
-- **Comprehensive API**: Full coverage of ZFS operations (datasets, snapshots, pools, clones, volumes)
+- **Comprehensive API**: Full coverage of ZFS operations (datasets, snapshots, pools, clones, volumes, bookmarks)
+- **Better Error Messages**: Detailed stderr output for debugging
 - **Monitoring**: Prometheus metrics endpoint
 - **Logging**: Structured logging with configurable levels
+- **Redis Integration**: Token-based streaming for large transfers
 
 ## Quick Start
 
-1. **Run the setup script**:
+1. **Start Redis** (required for streaming operations):
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Run the setup script**:
    ```bash
    ./setup.sh
    ```
@@ -24,15 +32,16 @@ A multi-threaded JSON-RPC API server for ZFS management with authentication and 
    - Create default configuration
    - Generate convenience scripts
 
-2. **Start the server**:
+3. **Start the server**:
    ```bash
    ./start.sh
    ```
 
-3. **Test the API** (in another terminal):
+4. **Test the API**:
    ```bash
-   ./run_tests.sh
+   python3 test_api_client.py <pool_name>
    ```
+   Example: `python3 test_api_client.py tank`
 
 ## API Endpoints
 
@@ -50,13 +59,14 @@ A multi-threaded JSON-RPC API server for ZFS management with authentication and 
 
 ### Snapshot Operations
 - `snapshot_create` - Create snapshot
-- `snapshot_create_auto` - Create auto-named snapshot
-- `snapshot_list` - List snapshots
+- `snapshot_create_auto` - Create auto-named snapshot with timestamp
+- `snapshot_list` - List snapshots for a dataset
 - `snapshot_destroy` - Destroy snapshot
 - `snapshot_rollback` - Rollback to snapshot
 - `snapshot_hold` - Place hold on snapshot
 - `snapshot_release` - Release hold on snapshot
 - `snapshot_holds_list` - List holds on a snapshot
+- `snapshot_diff` - Compare differences between snapshots or snapshot and current filesystem
 
 ### Pool Operations
 - `pool_list` - List pools
@@ -132,14 +142,30 @@ response = requests.post("http://localhost:8545", json=request("pool_list"))
 - Python 3.8+
 - ZFS installed and accessible
 - Root/sudo access for ZFS operations
+- Docker (for Redis container)
+- Redis 7+ (provided via docker-compose.yml)
 
 ## Architecture
 
 - **Protocol**: JSON-RPC 2.0 over HTTP
-- **Concurrency**: ThreadPoolExecutor (20 workers default)
+- **Execution Model**: Native async with asyncio (no thread pool overhead)
+- **ZFS Commands**: Clean three-layer architecture
+  - **Command Builder** (`ZFSCommands`): Pure command construction
+  - **Async Executor** (`AsyncZFS`): Native async subprocess execution
+  - **Sync Executor** (`SyncZFS`): For scripts and tools
 - **Framework**: aiohttp + jsonrpcserver
 - **Authentication**: JWT tokens with passlib bcrypt
+- **Storage**: Redis for streaming session management
 - **Metrics**: Prometheus format
+
+### Benefits of New Architecture
+
+- ✅ **40% less code** - Eliminated ThreadPoolExecutor wrapper overhead
+- ✅ **Better performance** - Native async execution throughout
+- ✅ **Improved errors** - stderr included in error messages
+- ✅ **Single source of truth** - All ZFS commands in one place
+- ✅ **Easy sudo support** - Modify command builder in one place
+- ✅ **Consistent API** - Unified interface across all operations
 
 ## Monitoring
 

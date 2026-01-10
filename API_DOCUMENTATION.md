@@ -4,10 +4,31 @@
 
 The ZFS API provides a JSON-RPC interface for managing ZFS filesystems, snapshots, and performing send/receive operations. It includes both HTTP API endpoints and high-performance socket servers for streaming operations.
 
+Built on a clean three-layer architecture (`ZFSCommands` → `AsyncZFS` → OS), the API provides native async execution with no thread pool overhead, resulting in better performance and cleaner error messages.
+
 ## Base URL
 
 ```
 http://localhost:8545
+```
+
+## Error Handling
+
+All API methods return detailed error information including:
+- Error code (JSON-RPC standard codes)
+- Error message (human-readable description)
+- **stderr output** (actual ZFS command error messages for debugging)
+
+Example error response:
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32012,
+    "message": "Failed to destroy dataset: cannot destroy 'pool/dataset': dataset has snapshots"
+  },
+  "id": 1
+}
 ```
 
 ## Authentication
