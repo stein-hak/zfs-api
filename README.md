@@ -194,4 +194,4 @@ To work with the code:
 
 ## License
 
-This project uses the existing zfs.py library for ZFS operations.
+This project uses a custom-built ZFS command wrapper (`zfs_commands` package) for all ZFS operations.

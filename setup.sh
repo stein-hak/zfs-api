@@ -157,7 +157,7 @@ echo "✓ Convenience scripts created"
 echo ""
 echo "Verifying installation..."
 python -c "
-import zfs
+from zfs_commands import AsyncZFS, SyncZFS
 import jsonrpcserver
 import aiohttp
 print('✓ All modules can be imported successfully')
