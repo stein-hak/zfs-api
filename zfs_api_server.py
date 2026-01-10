@@ -344,6 +344,26 @@ async def dataset_mount(context: Dict[str, Any], dataset: str) -> Result:
         logger.exception(f"Error mounting dataset {dataset}")
         return Error(-32020, str(e))
 
+@method
+@require_auth
+async def dataset_rename(context: Dict[str, Any], dataset: str, new_name: str) -> Result:
+    """Rename a ZFS dataset"""
+    try:
+        api_requests.labels(method="dataset_rename", status="started").inc()
+        with api_duration.labels(method="dataset_rename").time():
+            result = await zfs.dataset_rename(dataset, new_name)
+
+        if result.success:
+            api_requests.labels(method="dataset_rename", status="success").inc()
+            return Success({"old_name": dataset, "new_name": new_name, "renamed": True})
+        else:
+            api_requests.labels(method="dataset_rename", status="failed").inc()
+            return Error(-32021, f"Failed to rename dataset: {result.stderr}")
+    except Exception as e:
+        api_requests.labels(method="dataset_rename", status="error").inc()
+        logger.exception(f"Error renaming dataset {dataset} to {new_name}")
+        return Error(-32022, str(e))
+
 # Snapshot operations
 @method
 @require_auth
