@@ -1,0 +1,14 @@
+jsonrpcserver>=5.0.0
+jsonrpcclient>=4.0.0
+aiohttp>=3.8.0
+pydantic>=2.0.0
+python-jose[cryptography]>=3.3.0
+passlib>=1.7.4
+python-multipart>=0.0.5
+uvloop>=0.17.0
+pyyaml>=6.0
+prometheus-client>=0.16.0
+redis>=4.5.0
+requests>=2.31.0
+paramiko>=4.0.0
+packaging>=25.0

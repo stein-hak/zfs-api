@@ -1,0 +1,25 @@
+[Unit]
+Description=ZFS API Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/stein/python/zfs-api
+Environment="PATH=/home/stein/python/zfs-api/venv/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/stein/python/zfs-api/venv/bin/python /home/stein/python/zfs-api/zfs_api_server.py
+Restart=always
+RestartSec=10
+
+# Security options
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zfs-api
+
+[Install]
+WantedBy=multi-user.target
