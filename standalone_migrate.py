@@ -243,10 +243,10 @@ def uncompress_ssh_recv(fd, host, dataset, type=None, force=False, use_native_co
         return None
 
 # ====== PV module ======
-def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file=None, machine_readable=False):
+def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file=None, machine_readable=False, update_interval=10):
     """
     Process visualization utility wrapper.
-    
+
     Args:
         fd: Input file descriptor
         verbose: Show progress meter (True by default)
@@ -256,8 +256,9 @@ def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file
         shell: Use shell execution
         out_fd: Output file descriptor
         file: Output file path
-        machine_readable: Force output for machine parsing (adds -f -i 1)
-        
+        machine_readable: Force output for machine parsing (adds -f -i N)
+        update_interval: Update interval in seconds (default 10)
+
     Returns:
         Process object
     """
@@ -280,8 +281,8 @@ def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file
         # Add machine-readable flags
         if machine_readable:
             # -f: force output even when not to terminal
-            # -i 1: update every 1 second
-            cmd += '-f -i 1 '
+            # -i N: update every N seconds
+            cmd += f'-f -i {update_interval} '
             
         if limit:
             cmd += '-L %s ' % str(limit)
@@ -300,7 +301,7 @@ def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file
         
         # Add machine-readable flags
         if machine_readable:
-            cmd.extend(['-f', '-i', '1'])
+            cmd.extend(['-f', '-i', str(update_interval)])
             
         if limit:
             cmd.append('-L')
@@ -831,7 +832,7 @@ class zfs():
         logger.debug(f"Executing remote command: {ssh_cmd}")
         return Popen(ssh_cmd, stdout=PIPE, shell=True)
     
-    def adaptive_recv(self, fd, dataset, compression=None, verbose=False, machine_readable=False, limit=0, time=0, size=0, force=True):
+    def adaptive_recv(self, fd, dataset, compression=None, verbose=False, machine_readable=False, limit=0, time=0, size=0, force=True, progress_interval=10):
         """
         Receive a ZFS snapshot with adaptive decompression and progress visualization.
         
@@ -869,7 +870,7 @@ class zfs():
             # For files, use pv with file output for both visualization and writing
             if verbose:
                 logger.info(f"Visualizing receive progress with pv and writing to file")
-                file_proc = pv(input_fd, verbose=verbose, machine_readable=machine_readable, limit=limit, time=time, size=size, file=dataset)
+                file_proc = pv(input_fd, verbose=verbose, machine_readable=machine_readable, limit=limit, time=time, size=size, file=dataset, update_interval=progress_interval)
                 return file_proc
             else:
                 # Without visualization, just write to file
@@ -884,7 +885,7 @@ class zfs():
             # For ZFS datasets, use visualization then zfs receive
             if verbose:
                 logger.info(f"Visualizing receive progress with pv")
-                pv_process = pv(input_fd, verbose=verbose, machine_readable=machine_readable, limit=limit, time=time, size=size)
+                pv_process = pv(input_fd, verbose=verbose, machine_readable=machine_readable, limit=limit, time=time, size=size, update_interval=progress_interval)
                 input_fd = pv_process.stdout
             
             # Execute the zfs receive command
@@ -893,7 +894,7 @@ class zfs():
             return recv_process
         
     def adaptive_send(self, dataset, snap, snap1=None, recurse=False, compression=None, verbose=False, machine_readable=False, limit=0,
-                      time=0, out_fd=None, use_native_compression=False, resume_token=None):
+                      time=0, out_fd=None, use_native_compression=False, resume_token=None, progress_interval=10):
         """
         Send a ZFS snapshot with adaptive compression and progress visualization.
         
@@ -953,7 +954,7 @@ class zfs():
                 if verbose:
                     logger.info(f"Using {compression} compression for ZFS stream")
                 # Use pv for progress visualization first
-                piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time)
+                piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time, update_interval=progress_interval)
                 # Then apply compression
                 if out_fd:
                     compr = compressor(piper.stdout, compression, out_fd=out_fd)
@@ -968,9 +969,9 @@ class zfs():
                     
                 # Just use pv for progress visualization
                 if out_fd:
-                    piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time, out_fd=out_fd)
+                    piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time, out_fd=out_fd, update_interval=progress_interval)
                 else:
-                    piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time)
+                    piper = pv(send.stdout, verbose=verbose, machine_readable=machine_readable, limit=limit, size=size, time=time, update_interval=progress_interval)
                 return piper
 
 class zpool():
@@ -1521,9 +1522,9 @@ class SSH:
         self.close()
 
 class ssh_send(SSH):
-    def __init__(self, host, dataset=None, recv_dataset=None, snapshot=None, compress_type='auto', 
-                limit=0, time=0, recurse=False, verbose=False, machine_readable=False, user='root', passwd=None, 
-                oneshot=False, create_snapshot=False, update_bootfs=False, sync=False, reverse=False):
+    def __init__(self, host, dataset=None, recv_dataset=None, snapshot=None, compress_type='auto',
+                limit=0, time=0, recurse=False, verbose=False, machine_readable=False, user='root', passwd=None,
+                oneshot=False, create_snapshot=False, update_bootfs=False, sync=False, reverse=False, progress_interval=10):
         """Initialize SSH connection for sending ZFS datasets."""
         SSH.__init__(self, host=host, user=user, passwd=passwd)
 
@@ -1542,6 +1543,7 @@ class ssh_send(SSH):
         self.update_bootfs = update_bootfs
         self.sync = sync
         self.backup_stream = False
+        self.progress_interval = progress_interval
         self.reverse = reverse
         self.use_native_compression = False  # Default to not using native compression
         
@@ -1748,6 +1750,55 @@ class ssh_send(SSH):
         out = self.execute(cmd)
         return out
 
+    def zfs_release_remote(self, dataset, snapshot, tag):
+        """Release a hold on remote host."""
+        cmd = 'zfs release %s %s@%s' % (tag, dataset, snapshot)
+        out = self.execute(cmd)
+        return out
+
+    def zfs_get_holds_remote(self, dataset):
+        """Get all holds from remote dataset.
+
+        Returns:
+            OrderedDict of {snapshot: [tag1, tag2, ...]}
+        """
+        # Get list of snapshots on remote dataset
+        cmd = 'zfs list -H -t snapshot -o name -r %s' % dataset
+        snapshot_lines = self.execute(cmd)
+
+        holds = OrderedDict()
+        if not snapshot_lines:
+            return holds
+
+        # For each snapshot, get its holds
+        for snap_line in snapshot_lines:
+            snap_line = snap_line.strip()
+            if not snap_line or dataset not in snap_line:
+                continue
+
+            # Extract snapshot name (format: dataset@snapshot)
+            if '@' in snap_line:
+                snapshot = snap_line.split('@')[1]
+
+                # Get holds for this snapshot
+                holds_cmd = 'zfs holds -H %s' % snap_line
+                holds_output = self.execute(holds_cmd)
+
+                if holds_output:
+                    snap_holds = []
+                    for hold_line in holds_output:
+                        hold_line = hold_line.strip()
+                        if hold_line:
+                            # Format: NAME\tTAG\tTIMESTAMP
+                            parts = hold_line.split('\t')
+                            if len(parts) >= 2:
+                                snap_holds.append(parts[1])
+
+                    if snap_holds:
+                        holds[snapshot] = snap_holds
+
+        return holds
+
     def zfs_get_remote(self, dataset, property):
         """Get ZFS property from remote dataset."""
         cmd = 'zfs get -H -p %s %s' % (property, dataset)
@@ -1779,7 +1830,7 @@ class ssh_send(SSH):
             return None
 
     def cleanup_sync(self):
-        """Clean up sync tags on snapshots."""
+        """Clean up sync tags on local snapshots."""
         holds = self.zfs.get_holds(self.dataset)
         host_holds = OrderedDict()
 
@@ -1800,6 +1851,37 @@ class ssh_send(SSH):
 
         for i in list(host_holds.keys())[:-1]:
             self.zfs.release(self.dataset, i, host_holds[i])
+
+    def cleanup_remote_sync(self):
+        """Clean up sync tags on remote snapshots."""
+        try:
+            # Get holds from remote dataset
+            holds = self.zfs_get_holds_remote(self.recv_dataset)
+            host_holds = OrderedDict()
+
+            for snap in holds.keys():
+                tags = holds[snap]
+                for tag in tags:
+                    try:
+                        parts = tag.split('_')
+                        if parts[0] == 'sync' and parts[2] == self.host:
+                            host_holds[snap] = tag
+                    except:
+                        pass
+
+            if self.verbose and host_holds:
+                logger.info('REMOTE: Found %i sync points for host %s' % (len(host_holds.keys()), self.host))
+                last_snap = list(host_holds.keys())[-1]
+                logger.info('REMOTE: Latest was snapshot %s ' % (last_snap))
+
+            # Release all but the latest hold on remote
+            for i in list(host_holds.keys())[:-1]:
+                if self.verbose:
+                    logger.info('REMOTE: Releasing hold %s on snapshot %s' % (host_holds[i], i))
+                self.zfs_release_remote(self.recv_dataset, i, host_holds[i])
+
+        except Exception as e:
+            logger.error(f"Error cleaning up remote sync holds: {str(e)}")
 
     def send_snapshot(self):
         """Send snapshot to remote host."""
@@ -1827,9 +1909,10 @@ class ssh_send(SSH):
                 # Use the adaptive_send function with resume_token parameter
                 send = self.zfs.adaptive_send(dataset=self.dataset, snap=None, recurse=self.recurse,
                                          verbose=self.verbose, compression=self.compress_type,
-                                         limit=self.limit, time=self.time, 
+                                         limit=self.limit, time=self.time,
                                          use_native_compression=self.use_native_compression,
-                                         resume_token=resume_token, machine_readable=self.machine_readable)
+                                         resume_token=resume_token, machine_readable=self.machine_readable,
+                                         progress_interval=self.progress_interval)
                 
                 if not send:
                     logger.error('Failed to create ZFS send process with resume token')
@@ -1906,7 +1989,8 @@ class ssh_send(SSH):
 
                             send = self.zfs.adaptive_send(dataset=self.dataset, snap=snap, snap1=snap1, recurse=self.recurse,
                                                      verbose=self.verbose, compression=self.compress_type,
-                                                     limit=self.limit, time=self.time, use_native_compression=self.use_native_compression)
+                                                     limit=self.limit, time=self.time, use_native_compression=self.use_native_compression,
+                                                     machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                             if self.verbose:
                                 logger.info(f"Using compression: {self.compress_type} with pv for progress visualization")
@@ -1932,7 +2016,7 @@ class ssh_send(SSH):
                         send = self.zfs.adaptive_send(dataset=self.dataset, snap=snap, snap1=snap1, recurse=self.recurse,
                                                  verbose=self.verbose, compression=self.compress_type,
                                                  limit=self.limit, time=self.time, use_native_compression=self.use_native_compression,
-                                                 machine_readable=self.machine_readable)
+                                                 machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                         if self.verbose:
                             logger.info(f"Using compression: {self.compress_type} with pv for visualization")
@@ -1952,8 +2036,9 @@ class ssh_send(SSH):
                             
                             remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=snap1, tag=tag)
                             logger.info(f"SYNC: Remote hold result: {remote_out}")
-                            
+
                             self.cleanup_sync()
+                            self.cleanup_remote_sync()
                             logger.info(f"SYNC: Cleanup completed")
 
                         if self.update_bootfs:
@@ -1988,7 +2073,7 @@ class ssh_send(SSH):
                                                           verbose=self.verbose, compression=self.compress_type,
                                                           limit=self.limit, time=self.time,
                                                           use_native_compression=self.use_native_compression,
-                                                          machine_readable=self.machine_readable)
+                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval)
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
                                 recv.communicate()
@@ -1997,14 +2082,15 @@ class ssh_send(SSH):
                                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
                                     logger.info(f"SYNC: (incremental path) Creating holds with tag '{tag}' for snapshot '{snap1}'")
                                     logger.info(f"SYNC: Local dataset='{self.dataset}', Remote dataset='{self.recv_dataset}'")
-                                    
+
                                     local_rc = self.zfs.hold(self.dataset, snapshot=snap1, tag=tag)
                                     logger.info(f"SYNC: Local hold result: {local_rc}")
-                                    
+
                                     remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=snap1, tag=tag)
                                     logger.info(f"SYNC: Remote hold result: {remote_out}")
-                                    
+
                                     self.cleanup_sync()
+                                    self.cleanup_remote_sync()
                                     logger.info(f"SYNC: Cleanup completed")
 
                                 if self.backup_stream:
@@ -2037,7 +2123,7 @@ class ssh_send(SSH):
                                                           verbose=self.verbose, compression=self.compress_type,
                                                           limit=self.limit, time=self.time,
                                                           use_native_compression=self.use_native_compression,
-                                                          machine_readable=self.machine_readable)
+                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval)
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
 
@@ -2047,14 +2133,15 @@ class ssh_send(SSH):
                                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
                                     logger.info(f"SYNC: (full send path) Creating holds with tag '{tag}' for snapshot '{snap1}'")
                                     logger.info(f"SYNC: Local dataset='{self.dataset}', Remote dataset='{self.recv_dataset}'")
-                                    
+
                                     local_rc = self.zfs.hold(self.dataset, snapshot=snap1, tag=tag)
                                     logger.info(f"SYNC: Local hold result: {local_rc}")
-                                    
+
                                     remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=snap1, tag=tag)
                                     logger.info(f"SYNC: Remote hold result: {remote_out}")
-                                    
+
                                     self.cleanup_sync()
+                                    self.cleanup_remote_sync()
                                     logger.info(f"SYNC: Cleanup completed")
 
                                 if self.backup_stream:
@@ -2073,7 +2160,7 @@ class ssh_send(SSH):
                                          machine_readable=self.machine_readable,
                                          compression=self.compress_type,
                                          limit=self.limit, time=self.time,
-                                         use_native_compression=self.use_native_compression)
+                                         use_native_compression=self.use_native_compression, progress_interval=self.progress_interval)
 
                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression, dataset=self.recv_dataset)
 
@@ -2083,16 +2170,17 @@ class ssh_send(SSH):
                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
                     logger.info(f"SYNC: (full snapshot existing) Creating holds with tag '{tag}' for snapshot '{self.snapshot}'")
                     logger.info(f"SYNC: Local dataset='{self.dataset}', Remote dataset='{self.recv_dataset}'")
-                    
+
                     local_rc = self.zfs.hold(self.dataset, snapshot=self.snapshot, tag=tag)
                     logger.info(f"SYNC: Local hold result: {local_rc}")
-                    
+
                     remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=self.snapshot, tag=tag)
                     logger.info(f"SYNC: Remote hold result: {remote_out}")
-                    
+
                     self.cleanup_sync()
+                    self.cleanup_remote_sync()
                     logger.info(f"SYNC: Cleanup completed")
-                
+
                 if self.backup_stream:
                     self.zfs_set_remote(self.recv_dataset, 'control:autobackup', 'passive')
             else:
@@ -2107,7 +2195,7 @@ class ssh_send(SSH):
                                                   compression=self.compress_type,
                                                   limit=self.limit, time=self.time,
                                                   use_native_compression=self.use_native_compression,
-                                                  machine_readable=self.machine_readable)
+                                                  machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                         recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                dataset=self.recv_dataset)
@@ -2118,14 +2206,15 @@ class ssh_send(SSH):
                             tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
                             logger.info(f"SYNC: (existing snapshot path) Creating holds with tag '{tag}' for snapshot '{snap}'")
                             logger.info(f"SYNC: Local dataset='{self.dataset}', Remote dataset='{self.recv_dataset}'")
-                            
+
                             local_rc = self.zfs.hold(self.dataset, snapshot=snap, tag=tag)
                             logger.info(f"SYNC: Local hold result: {local_rc}")
-                            
+
                             remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=snap, tag=tag)
                             logger.info(f"SYNC: Remote hold result: {remote_out}")
-                            
+
                             self.cleanup_sync()
+                            self.cleanup_remote_sync()
                             logger.info(f"SYNC: Cleanup completed")
 
                         if self.backup_stream:
@@ -2149,7 +2238,7 @@ class ssh_send(SSH):
                                               compression=self.compress_type,
                                               limit=self.limit, time=self.time,
                                               use_native_compression=self.use_native_compression,
-                                              machine_readable=self.machine_readable)
+                                              machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                     if self.verbose:
                         logger.info(f"Using compression: {self.compress_type} with pv for visualization")
@@ -2170,14 +2259,15 @@ class ssh_send(SSH):
                         tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
                         logger.info(f"SYNC: (new snapshot path) Creating holds with tag '{tag}' for snapshot '{snap_name}'")
                         logger.info(f"SYNC: Local dataset='{self.dataset}', Remote dataset='{self.recv_dataset}'")
-                        
+
                         local_rc = self.zfs.hold(self.dataset, snapshot=snap_name, tag=tag)
                         logger.info(f"SYNC: Local hold result: {local_rc}")
-                        
+
                         remote_out = self.zfs_hold_remote(self.recv_dataset, snapshot=snap_name, tag=tag)
                         logger.info(f"SYNC: Remote hold result: {remote_out}")
-                        
+
                         self.cleanup_sync()
+                        self.cleanup_remote_sync()
                         logger.info(f"SYNC: Cleanup completed")
 
                     if self.backup_stream:
@@ -2186,9 +2276,9 @@ class ssh_send(SSH):
         return 0
 
 class SSHReceive(SSH):
-    def __init__(self, host, dataset=None, recv_dataset=None, snapshot=None, compress_type='auto', 
-                limit=0, time=0, recurse=False, verbose=False, oneshot=False, create_snapshot=False, 
-                update_bootfs=False, passwd=None):
+    def __init__(self, host, dataset=None, recv_dataset=None, snapshot=None, compress_type='auto',
+                limit=0, time=0, recurse=False, verbose=False, oneshot=False, create_snapshot=False,
+                update_bootfs=False, passwd=None, machine_readable=False, progress_interval=10):
         """
         Initialize parameters for receiving ZFS snapshots from a remote host.
         """
@@ -2209,7 +2299,9 @@ class SSHReceive(SSH):
         self.update_bootfs = update_bootfs
         self.state = 0
         self.use_native_compression = False
-        
+        self.machine_readable = machine_readable
+        self.progress_interval = progress_interval
+
         self.zfs = zfs()
         self.zpool = zpool()
         
@@ -2766,7 +2858,9 @@ class SSHReceive(SSH):
                 limit=self.limit,
                 time=self.time,
                 size=transfer_size,
-                force=True
+                force=True,
+                machine_readable=self.machine_readable,
+                progress_interval=self.progress_interval
             )
             
             # ============= STEP 5: Execute transfer with monitoring =============
@@ -2821,8 +2915,8 @@ class SSHReceive(SSH):
             return False
 
 class local_send():
-    def __init__(self, source, destination, snap=None, snap1=None, create_snapshot=False, oneshot=False, recurse=False, 
-                 verbose=False, machine_readable=False, update_bootfs=False, update_file_snapshot=None):
+    def __init__(self, source, destination, snap=None, snap1=None, create_snapshot=False, oneshot=False, recurse=False,
+                 verbose=False, machine_readable=False, update_bootfs=False, update_file_snapshot=None, progress_interval=10):
         self.source = source
         self.dest = destination
         self.snap = snap
@@ -2837,6 +2931,7 @@ class local_send():
         self.update_file_snapshot = update_file_snapshot
         self.bootfs = None
         self.use_native_compression = False  # Default to not using native compression
+        self.progress_interval = progress_interval
         
         # Initialize ZFS
         self.zfs = zfs()
@@ -3004,7 +3099,7 @@ class local_send():
                         logger.info('Sending full snapshot %s to file %s ' % (self.snap, self.dest))
                     send = self.zfs.adaptive_send(dataset=self.source, snap=self.snap, recurse=self.recurse,
                                                   verbose=self.verbose, machine_readable=self.machine_readable, compression=dst_compression,
-                                                  use_native_compression=self.use_native_compression)
+                                                  use_native_compression=self.use_native_compression, progress_interval=self.progress_interval)
                     out_file = open(self.dest, 'wb+')
 
                     while send.poll() is None:
@@ -3028,7 +3123,7 @@ class local_send():
                     send = self.zfs.adaptive_send(dataset=self.source, snap=self.snap, snap1=self.snap1,
                                                   recurse=self.recurse,
                                                   verbose=self.verbose, compression=dst_compression,
-                                                  use_native_compression=self.use_native_compression)
+                                                  use_native_compression=self.use_native_compression, machine_readable=self.machine_readable, progress_interval=self.progress_interval)
                     out_file = open(self.dest, 'wb+')
 
                     while send.poll() is None:
@@ -3057,7 +3152,7 @@ class local_send():
                                                               verbose=self.verbose,
                                                               machine_readable=self.machine_readable,
                                                               compression=dst_compression,
-                                                              use_native_compression=self.use_native_compression)
+                                                              use_native_compression=self.use_native_compression, progress_interval=self.progress_interval)
                                 out_file = open(self.dest, 'wb+')
 
                                 while send.poll() is None:
@@ -3090,7 +3185,7 @@ class local_send():
                             send = self.zfs.adaptive_send(dataset=self.source, snap=snap_name, recurse=self.recurse,
                                                           verbose=self.verbose,
                                                           compression=dst_compression,
-                                                          use_native_compression=self.use_native_compression)
+                                                          use_native_compression=self.use_native_compression, machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                             out_file = open(self.dest, 'wb+')
 
@@ -3127,7 +3222,7 @@ class local_send():
                                                           recurse=self.recurse,
                                                           verbose=self.verbose, compression=None,
                                                           use_native_compression=self.use_native_compression,
-                                                          machine_readable=self.machine_readable)
+                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                             recv = self.zfs.recv_pipe(send.stdout, dataset=self.dest)
 
@@ -3164,13 +3259,13 @@ class local_send():
                                     send = self.zfs.adaptive_send(dataset=self.source, snap=snap1,
                                                                   recurse=self.recurse,
                                                                   verbose=self.verbose, machine_readable=self.machine_readable, compression=None,
-                                                                  use_native_compression=self.use_native_compression)
+                                                                  use_native_compression=self.use_native_compression, progress_interval=self.progress_interval)
                                 else:
                                     logger.info('Performing incremental send from %s to %s' % (snap, snap1))
                                     send = self.zfs.adaptive_send(dataset=self.source, snap=snap, snap1=snap1,
                                                                   recurse=self.recurse,
                                                                   verbose=self.verbose, machine_readable=self.machine_readable, compression=None,
-                                                                  use_native_compression=self.use_native_compression)
+                                                                  use_native_compression=self.use_native_compression, progress_interval=self.progress_interval)
                                 recv = self.zfs.recv_pipe(send.stdout, dataset=self.dest)
 
                                 recv.communicate()
@@ -3192,7 +3287,7 @@ class local_send():
                     send = self.zfs.adaptive_send(dataset=self.source, snap=self.snap, recurse=self.recurse,
                                                   verbose=self.verbose, compression=None,
                                                   use_native_compression=self.use_native_compression,
-                                                  machine_readable=self.machine_readable)
+                                                  machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                     recv = self.zfs.recv_pipe(send.stdout, dataset=self.dest)
                     recv.communicate()
@@ -3211,7 +3306,7 @@ class local_send():
                                                           verbose=self.verbose,
                                                           compression=None,
                                                           use_native_compression=self.use_native_compression,
-                                                          machine_readable=self.machine_readable)
+                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                             recv = self.zfs.recv_pipe(send.stdout, dataset=self.dest)
                             recv.communicate()
@@ -3235,7 +3330,7 @@ class local_send():
                                                       verbose=self.verbose,
                                                       compression=None,
                                                       use_native_compression=self.use_native_compression,
-                                                      machine_readable=self.machine_readable)
+                                                      machine_readable=self.machine_readable, progress_interval=self.progress_interval)
 
                         recv = self.zfs.recv_pipe(send.stdout, dataset=self.dest)
                         recv.communicate()
@@ -3299,10 +3394,12 @@ def main():
     parser.add_argument('--sync', action='store_true', help='Keep latest local snapshot for replication with given host')
     parser.add_argument('--update_from_snap', help='Snapshot from which to create update file')
     # By default, the tool shows a progress bar with transfer statistics
-    parser.add_argument('-q', '--quiet', action='store_true', default=False, 
+    parser.add_argument('-q', '--quiet', action='store_true', default=False,
                         help='Quiet output (disable progress visualization)')
     parser.add_argument('--machine-readable', action='store_true', default=False,
-                        help='Force pv output for machine parsing (adds -f -i 1 flags)')
+                        help='Force pv output for machine parsing (adds -f -i N flags)')
+    parser.add_argument('--progress-interval', type=int, default=10,
+                        help='Progress update interval in seconds (default: 10)')
     parser.add_argument('-p', '--password', help='SSH password for remote host')
     parser.add_argument('--ask-pass', action='store_true', default=False, 
                         help='Prompt for SSH password interactively (more secure than -p)')
@@ -3419,7 +3516,8 @@ def main():
             oneshot=args.oneshot,
             create_snapshot=args.snap,
             update_bootfs=args.update,
-            passwd=passwd
+            passwd=passwd,
+            progress_interval=args.progress_interval
         )
         
         if receiver.state == 1:
@@ -3478,7 +3576,8 @@ def main():
                 update_bootfs=args.update,
                 recurse=args.recursive,
                 sync=args.sync,
-                passwd=passwd
+                passwd=passwd,
+                progress_interval=args.progress_interval
             )
 
             if sender.state == 1:
@@ -3501,7 +3600,8 @@ def main():
             verbose=not args.quiet,
             machine_readable=args.machine_readable,
             update_bootfs=args.update,
-            update_file_snapshot=args.update_from_snap
+            update_file_snapshot=args.update_from_snap,
+            progress_interval=args.progress_interval
         )
         
         result = sender.send_snapshot()

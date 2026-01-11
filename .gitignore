@@ -42,5 +42,10 @@ build/
 *.egg-info/
 
 # Local config overrides
+config.yaml
 config.local.yaml
 .env
+
+# Generated scripts
+start.sh
+run_tests.sh

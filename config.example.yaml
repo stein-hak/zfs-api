@@ -1,0 +1,47 @@
+# ZFS API Server Configuration
+
+server:
+  # HTTP API Configuration
+  http:
+    host: 0.0.0.0
+    port: 8545
+  
+  # TCP Socket Configuration  
+  tcp:
+    host: 0.0.0.0
+    port: 9999
+    enabled: true
+  
+  # Unix Socket Configuration
+  unix:
+    path: ./zfs_token_socket
+    enabled: true
+  
+  # Worker configuration
+  workers: 20
+
+# Background Task Manager Configuration
+task_manager:
+  # Number of concurrent migration workers
+  migration_workers: 4
+
+auth:
+  enabled: true
+  # Default users (password: admin)
+  users:
+    admin: "$2b$12$/Cgi8ftHgz1adWuhpy7SGOfnKc2HJqY5WtKYrmoqeaN3eKDq055rO"
+
+rate_limit:
+  enabled: true
+  requests: 100
+  window: 60
+
+logging:
+  level: INFO
+  file: zfs_api.log
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  password: null  # Set if Redis requires authentication

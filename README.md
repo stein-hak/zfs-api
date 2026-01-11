@@ -101,11 +101,20 @@ A high-performance async JSON-RPC API server for ZFS management with authenticat
 
 ## Configuration
 
+Copy the example config and customize:
+```bash
+cp config.example.yaml config.yaml
+```
+
 Edit `config.yaml` to customize:
 - Server host/port
 - Authentication settings
 - Rate limiting
 - Logging
+- Redis connection
+- Migration workers
+
+**Important**: Change the default admin password in production!
 
 ## Example Usage
 
