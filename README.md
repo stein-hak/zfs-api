@@ -17,12 +17,18 @@ A high-performance async JSON-RPC API server for ZFS management with authenticat
 
 ## Quick Start
 
-1. **Start Redis** (required for streaming operations):
+1. **Clone and setup**:
+   ```bash
+   git clone https://github.com/stein-hak/zfs-api.git /opt/zfs-api
+   cd /opt/zfs-api
+   ```
+
+2. **Start Redis** (required for streaming operations):
    ```bash
    docker compose up -d
    ```
 
-2. **Run the setup script**:
+3. **Run the setup script**:
    ```bash
    ./setup.sh
    ```
@@ -32,12 +38,19 @@ A high-performance async JSON-RPC API server for ZFS management with authenticat
    - Create default configuration
    - Generate convenience scripts
 
-3. **Start the server**:
+4. **Configure**:
+   ```bash
+   cp config.example.yaml config.yaml
+   python3 generate_password_hash.py  # Generate secure password
+   nano config.yaml  # Update with generated hash
+   ```
+
+5. **Start the server**:
    ```bash
    ./start.sh
    ```
 
-4. **Test the API**:
+6. **Test the API**:
    ```bash
    python3 test_api_client.py <pool_name>
    ```

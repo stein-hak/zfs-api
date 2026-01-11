@@ -1,14 +1,15 @@
 [Unit]
 Description=ZFS API Server
-After=network.target
+After=network.target redis.service docker.service
+Wants=redis.service
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/home/stein/python/zfs-api
-Environment="PATH=/home/stein/python/zfs-api/venv/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/home/stein/python/zfs-api/venv/bin/python /home/stein/python/zfs-api/zfs_api_server.py
+WorkingDirectory=/opt/zfs-api
+Environment="PATH=/opt/zfs-api/venv/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/zfs-api/venv/bin/python /opt/zfs-api/zfs_api_server.py
 Restart=always
 RestartSec=10
 

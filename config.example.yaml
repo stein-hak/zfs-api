@@ -3,12 +3,12 @@
 server:
   # HTTP API Configuration
   http:
-    host: 0.0.0.0
+    host: 127.0.0.1  # Use 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces
     port: 8545
-  
-  # TCP Socket Configuration  
+
+  # TCP Socket Configuration
   tcp:
-    host: 0.0.0.0
+    host: 127.0.0.1  # Use 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces
     port: 9999
     enabled: true
   
