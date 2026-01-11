@@ -3,7 +3,7 @@ Async ZFS Executor - For use with asyncio event loops
 Use this in: zfs_api_server.py, async handlers
 """
 import asyncio
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from .builder import ZFSCommands
 from .types import CommandResult
 
@@ -128,7 +128,7 @@ class AsyncZFS:
 
     async def snapshot_create_auto(self, dataset: str, tag: str,
                                   tag1: Optional[str] = None,
-                                  recursive: bool = False) -> tuple[CommandResult, str]:
+                                  recursive: bool = False) -> Tuple[CommandResult, str]:
         """Create auto-named snapshot with timestamp"""
         from datetime import datetime
         now = datetime.utcnow()
@@ -190,7 +190,7 @@ class AsyncZFS:
         return []
 
     async def snapshot_diff(self, snapshot1: str,
-                          snapshot2: Optional[str] = None) -> tuple[List, List, List, List]:
+                          snapshot2: Optional[str] = None) -> Tuple[List, List, List, List]:
         """
         Compare snapshot differences.
         Returns (new, modified, deleted, renamed) tuples

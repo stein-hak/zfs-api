@@ -4,7 +4,7 @@ Use this in: standalone_migrate.py, socket servers (threaded)
 """
 import subprocess
 from subprocess import PIPE
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from .builder import ZFSCommands
 from .types import CommandResult
 
@@ -130,7 +130,7 @@ class SyncZFS:
 
     def snapshot_create_auto(self, dataset: str, tag: str,
                             tag1: Optional[str] = None,
-                            recursive: bool = False) -> tuple[CommandResult, str]:
+                            recursive: bool = False) -> Tuple[CommandResult, str]:
         """Create auto-named snapshot with timestamp"""
         from datetime import datetime
         now = datetime.utcnow()
@@ -192,7 +192,7 @@ class SyncZFS:
         return []
 
     def snapshot_diff(self, snapshot1: str,
-                     snapshot2: Optional[str] = None) -> tuple[List, List, List, List]:
+                     snapshot2: Optional[str] = None) -> Tuple[List, List, List, List]:
         """
         Compare snapshot differences.
         Returns (new, modified, deleted, renamed) tuples
