@@ -161,11 +161,13 @@ response = requests.post("http://localhost:8545", json=request("pool_list"))
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.8+ (tested on 3.8.0+)
 - ZFS installed and accessible
 - Root/sudo access for ZFS operations
 - Docker (for Redis container)
 - Redis 7+ (provided via docker-compose.yml)
+
+**Note**: Python 3.8 support requires paramiko 3.x. Python 3.9+ can use paramiko 4.x.
 
 ## Architecture
 
