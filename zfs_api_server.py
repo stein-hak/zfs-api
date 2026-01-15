@@ -1839,9 +1839,12 @@ async def handle_jsonrpc(request):
     try:
         # Get client ID for rate limiting
         client_id = request.remote
-        
-        # Check rate limit
-        if not await check_rate_limit(client_id):
+
+        # Bypass rate limit for localhost (trusted source, same as auth bypass)
+        is_localhost = client_id in ["127.0.0.1", "::1", "localhost"]
+
+        # Check rate limit (skip for localhost)
+        if not is_localhost and not await check_rate_limit(client_id):
             return web.json_response({
                 "jsonrpc": "2.0",
                 "error": {
