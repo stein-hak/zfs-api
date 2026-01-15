@@ -61,6 +61,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Rate limiting
 rate_limit_store = {}
+rate_limit_lock = asyncio.Lock()  # Protect concurrent access
 RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW = 60  # seconds
 
@@ -143,29 +144,31 @@ def verify_token(token: str) -> Optional[str]:
     except JWTError:
         return None
 
-def check_rate_limit(client_id: str) -> bool:
-    """Check if client has exceeded rate limit"""
+async def check_rate_limit(client_id: str) -> bool:
+    """Check if client has exceeded rate limit (thread-safe)"""
     if not config.config["rate_limit"]["enabled"]:
         return True
-    
-    now = time.time()
-    window = config.config["rate_limit"]["window"]
-    limit = config.config["rate_limit"]["requests"]
-    
-    # Clean old entries
-    cutoff = now - window
-    if client_id in rate_limit_store:
-        rate_limit_store[client_id] = [t for t in rate_limit_store[client_id] if t > cutoff]
-    
-    # Check limit
-    if client_id not in rate_limit_store:
-        rate_limit_store[client_id] = []
-    
-    if len(rate_limit_store[client_id]) >= limit:
-        return False
-    
-    rate_limit_store[client_id].append(now)
-    return True
+
+    async with rate_limit_lock:  # Prevent race conditions
+        now = time.time()
+        window = config.config["rate_limit"]["window"]
+        limit = config.config["rate_limit"]["requests"]
+
+        # Clean old entries
+        cutoff = now - window
+        if client_id in rate_limit_store:
+            rate_limit_store[client_id] = [t for t in rate_limit_store[client_id] if t > cutoff]
+
+        # Check limit
+        if client_id not in rate_limit_store:
+            rate_limit_store[client_id] = []
+
+        if len(rate_limit_store[client_id]) >= limit:
+            logger.warning(f"Rate limit exceeded for {client_id}: {len(rate_limit_store[client_id])} requests in {window}s window")
+            return False
+
+        rate_limit_store[client_id].append(now)
+        return True
 
 def require_auth(f):
     """Decorator to require authentication"""
@@ -1838,7 +1841,7 @@ async def handle_jsonrpc(request):
         client_id = request.remote
         
         # Check rate limit
-        if not check_rate_limit(client_id):
+        if not await check_rate_limit(client_id):
             return web.json_response({
                 "jsonrpc": "2.0",
                 "error": {
