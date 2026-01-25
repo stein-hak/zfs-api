@@ -156,18 +156,26 @@ async def check_rate_limit(client_id: str) -> bool:
 
         # Clean old entries
         cutoff = now - window
+        old_count = len(rate_limit_store.get(client_id, []))
         if client_id in rate_limit_store:
             rate_limit_store[client_id] = [t for t in rate_limit_store[client_id] if t > cutoff]
+            cleaned_count = old_count - len(rate_limit_store[client_id])
+            if cleaned_count > 0:
+                logger.debug(f"Cleaned {cleaned_count} old entries for {client_id}, {len(rate_limit_store[client_id])} remaining")
 
         # Check limit
         if client_id not in rate_limit_store:
             rate_limit_store[client_id] = []
 
-        if len(rate_limit_store[client_id]) >= limit:
-            logger.warning(f"Rate limit exceeded for {client_id}: {len(rate_limit_store[client_id])} requests in {window}s window")
+        current_count = len(rate_limit_store[client_id])
+        if current_count >= limit:
+            oldest = min(rate_limit_store[client_id]) if rate_limit_store[client_id] else now
+            time_until_reset = int(oldest + window - now)
+            logger.warning(f"Rate limit exceeded for {client_id}: {current_count}/{limit} requests in {window}s window, reset in {time_until_reset}s")
             return False
 
         rate_limit_store[client_id].append(now)
+        logger.debug(f"Rate limit check passed for {client_id}: {current_count + 1}/{limit} requests")
         return True
 
 def require_auth(f):
@@ -1436,7 +1444,21 @@ async def migration_create(context: Dict[str, Any], source: str, destination: st
             params['limit'] = limit
         if compression:
             params['compression'] = compression
-            
+
+        # Check for duplicate running/pending migrations
+        keys = await task_manager.redis.keys('task:*') or []
+        for key in keys:
+            task_id_check = key.decode().split(":", 1)[1] if isinstance(key, bytes) else key.split(":", 1)[1]
+            task = await task_manager.get_task(task_id_check)
+            if task and task.type == 'migration' and task.status.value in ['pending', 'running']:
+                # Check if same source, destination, and remote
+                if (task.params.get('source') == source and
+                    task.params.get('destination') == destination and
+                    task.params.get('remote') == remote):
+                    logger.warning(f"Duplicate migration rejected: {source} -> {destination} (remote: {remote}) already running as task {task.id}")
+                    api_requests.labels(method="migration_create", status="duplicate").inc()
+                    return Error(-32102, f"Migration already running: task {task.id} - {source} -> {destination}")
+
         # Create background task
         task_id = await task_manager.create_task('migration', params)
         
