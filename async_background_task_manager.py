@@ -404,7 +404,10 @@ async def handle_migration_task(task_id: str, params: Dict[str, Any],
                 'cancelled': True
             }
         elif return_code != 0:
-            raise Exception(f"Migration failed with return code {return_code}")
+            # Get error context from launcher
+            error_context = launcher.get_error_context()
+            error_msg = f"Migration failed with return code {return_code}\n\nError details:\n{error_context}"
+            raise Exception(error_msg)
     finally:
         # Remove from running tasks when done
         if task_id in manager.running_tasks:

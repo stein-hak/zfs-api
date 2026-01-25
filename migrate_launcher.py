@@ -167,6 +167,8 @@ class MigrateLauncher:
         self.start_time = time.time()
         self.total_size = None
         self.process = None  # Store the subprocess reference
+        self.error_lines = []  # Store recent error/log lines for debugging
+        self.max_error_lines = 20  # Keep last 20 lines
     
     def parse_pv_line(self, line: str) -> Optional[Dict[str, Any]]:
         """Parse a line of pv output"""
@@ -284,6 +286,10 @@ class MigrateLauncher:
                         else:
                             # Log all non-progress output including what failed to parse
                             await self.notify_handlers('on_log', line)
+                            # Store for error reporting
+                            self.error_lines.append(line)
+                            if len(self.error_lines) > self.max_error_lines:
+                                self.error_lines.pop(0)
                             
         except Exception as e:
             await self.notify_handlers('on_error', self.task_id, str(e))
@@ -297,6 +303,20 @@ class MigrateLauncher:
         
         return return_code
     
+    def get_error_context(self) -> str:
+        """Get recent error/log lines for debugging failed migrations"""
+        if not self.error_lines:
+            return "No error details captured"
+
+        # Filter for actual errors (lines containing ERROR, failed, cannot, etc.)
+        error_keywords = ['ERROR', 'Error', 'failed', 'Failed', 'cannot', 'Cannot', 'WARN', 'Warning']
+        errors = [line for line in self.error_lines if any(kw in line for kw in error_keywords)]
+
+        if errors:
+            return "\n".join(errors[-10:])  # Last 10 error lines
+        else:
+            return "\n".join(self.error_lines[-5:])  # Last 5 lines if no explicit errors
+
     async def cancel(self):
         """Cancel the running migration"""
         if self.process and self.process.returncode is None:
