@@ -1445,19 +1445,19 @@ async def migration_create(context: Dict[str, Any], source: str, destination: st
         if compression:
             params['compression'] = compression
 
-        # Check for duplicate running/pending migrations
+        # Check for conflicting running/pending migrations
         keys = await task_manager.redis.keys('task:*') or []
         for key in keys:
             task_id_check = key.decode().split(":", 1)[1] if isinstance(key, bytes) else key.split(":", 1)[1]
             task = await task_manager.get_task(task_id_check)
             if task and task.type == 'migration' and task.status.value in ['pending', 'running']:
-                # Check if same source, destination, and remote
-                if (task.params.get('source') == source and
-                    task.params.get('destination') == destination and
+                # Check if same destination and remote (prevents write conflicts)
+                if (task.params.get('destination') == destination and
                     task.params.get('remote') == remote):
-                    logger.warning(f"Duplicate migration rejected: {source} -> {destination} (remote: {remote}) already running as task {task.id}")
-                    api_requests.labels(method="migration_create", status="duplicate").inc()
-                    return Error(-32102, f"Migration already running: task {task.id} - {source} -> {destination}")
+                    existing_source = task.params.get('source')
+                    logger.warning(f"Conflicting migration rejected: {source} -> {destination} (remote: {remote}) conflicts with task {task.id} ({existing_source} -> {destination})")
+                    api_requests.labels(method="migration_create", status="conflict").inc()
+                    return Error(-32102, f"Migration conflict: task {task.id} already writing to {destination} (from {existing_source})")
 
         # Create background task
         task_id = await task_manager.create_task('migration', params)
