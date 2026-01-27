@@ -81,7 +81,30 @@ class TokenAuthenticatedHandler(socketserver.BaseRequestHandler):
                 # Unix sockets might not have client_address
                 if isinstance(self.request, socket.socket) and self.request.family == socket.AF_UNIX:
                     client_ip = "unix-socket"
-            
+
+            # Bypass authentication for Unix socket connections (trusted local access)
+            if client_ip == "unix-socket":
+                logger.info(f"Unix socket connection - bypassing authentication (trusted)")
+                # For Unix socket, parse the sent data as operation info instead of token
+                try:
+                    operation_data = json.loads(token_id)
+                    # Return operation data directly (passwordless access)
+                    token_data = {
+                        'token_id': 'unix-socket-trusted',
+                        'user_id': 'unix-socket',
+                        'operation': operation_data.get('operation', 'send'),
+                        'dataset': operation_data.get('dataset', ''),
+                        'snapshot': operation_data.get('snapshot'),
+                        'parameters': operation_data.get('parameters', {}),
+                        'client_ip': 'unix-socket',
+                        'expires': None
+                    }
+                    logger.info(f"Unix socket: {token_data['operation']} on {token_data['dataset']}")
+                    return token_data
+                except json.JSONDecodeError:
+                    self.send_error("Unix socket requires JSON operation data: {\"operation\": \"send\", \"dataset\": \"pool/data\", \"snapshot\": \"snap1\"}")
+                    return None
+
             # Validate token
             token_preview = token_id[:8] if len(token_id) >= 8 else token_id
             logger.info(f"Authenticating token {token_preview}... from {client_ip}")
