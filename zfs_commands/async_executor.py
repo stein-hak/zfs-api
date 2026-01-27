@@ -65,7 +65,8 @@ class AsyncZFS:
                 if len(parts) >= 3:
                     props[parts[1]] = parts[2]
             return props
-        return {}
+        # Dataset doesn't exist or error occurred
+        raise Exception(f"Dataset '{dataset}' does not exist or cannot be accessed: {result.stderr.strip()}")
 
     async def dataset_set_property(self, dataset: str,
                                   property: str, value: str) -> CommandResult:
@@ -77,21 +78,23 @@ class AsyncZFS:
         """Get space usage information"""
         cmd = self.commands.dataset_get_space(dataset)
         result = await self._execute(cmd)
-        space = {'name': dataset, 'avail': 0, 'used': 0, 'usedsnap': 0,
-                'useddss': 0, 'usedrefreserv': 0, 'usedchild': 0}
 
         if result.success:
             parts = result.stdout.strip().split('\t')
             if len(parts) >= 7:
-                space['name'] = parts[0]
-                space['avail'] = int(parts[1])
-                space['used'] = int(parts[2])
-                space['usedsnap'] = int(parts[3])
-                space['useddss'] = int(parts[4])
-                space['usedrefreserv'] = int(parts[5])
-                space['usedchild'] = int(parts[6].strip())
+                space = {
+                    'name': parts[0],
+                    'avail': int(parts[1]),
+                    'used': int(parts[2]),
+                    'usedsnap': int(parts[3]),
+                    'useddss': int(parts[4]),
+                    'usedrefreserv': int(parts[5]),
+                    'usedchild': int(parts[6].strip())
+                }
+                return space
 
-        return space
+        # Dataset doesn't exist or error occurred
+        raise Exception(f"Dataset '{dataset}' does not exist or cannot be accessed: {result.stderr.strip()}")
 
     async def dataset_mount(self, dataset: str) -> CommandResult:
         """Mount a ZFS dataset"""
