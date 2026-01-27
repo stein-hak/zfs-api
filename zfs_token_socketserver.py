@@ -324,10 +324,17 @@ class TokenAuthenticatedUnixServer(socketserver.ThreadingMixIn, socketserver.Uni
         # Remove existing socket file if it exists
         if os.path.exists(server_address):
             os.unlink(server_address)
-        
+
         super().__init__(server_address, handler_class)
         handler_class.set_token_manager(token_manager)
-        logger.info(f"Token-authenticated Unix socket server listening on {server_address}")
+
+        # Set socket permissions to allow all users (rw-rw-rw-)
+        try:
+            os.chmod(server_address, 0o666)
+            logger.info(f"Token-authenticated Unix socket server listening on {server_address} (mode: 0666)")
+        except Exception as e:
+            logger.warning(f"Could not set socket permissions: {e}")
+            logger.info(f"Token-authenticated Unix socket server listening on {server_address}")
 
 # Example standalone server
 if __name__ == "__main__":
