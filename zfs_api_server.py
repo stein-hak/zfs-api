@@ -182,12 +182,17 @@ def require_auth(f):
     """Decorator to require authentication"""
     @wraps(f)
     async def wrapper(context, *args, **kwargs):
-        # Allow passwordless access from localhost
+        # Allow passwordless access from localhost and Unix sockets
         request = context.get("request")
         if request:
             client_ip = request.remote
+            # Check for localhost TCP connections
             if client_ip in ["127.0.0.1", "::1", "localhost"]:
                 context["username"] = "localhost"
+                return await f(context, *args, **kwargs)
+            # Check for Unix socket connections (remote is None or empty)
+            if client_ip is None or client_ip == "":
+                context["username"] = "unix-socket"
                 return await f(context, *args, **kwargs)
         
         if not config.config["auth"]["enabled"]:
@@ -1862,11 +1867,12 @@ async def handle_jsonrpc(request):
         # Get client ID for rate limiting
         client_id = request.remote
 
-        # Bypass rate limit for localhost (trusted source, same as auth bypass)
+        # Bypass rate limit for localhost and Unix sockets (trusted sources)
         is_localhost = client_id in ["127.0.0.1", "::1", "localhost"]
+        is_unix_socket = client_id is None or client_id == ""
 
-        # Check rate limit (skip for localhost)
-        if not is_localhost and not await check_rate_limit(client_id):
+        # Check rate limit (skip for localhost and Unix sockets)
+        if not is_localhost and not is_unix_socket and not await check_rate_limit(client_id):
             return web.json_response({
                 "jsonrpc": "2.0",
                 "error": {
