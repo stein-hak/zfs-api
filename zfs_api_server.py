@@ -2575,6 +2575,7 @@ async def main_async():
     await runner.setup()
     logger.info("AppRunner setup completed")
     
+    # Start TCP site
     try:
         site = web.TCPSite(runner, http_host, http_port)
         await site.start()
@@ -2582,6 +2583,24 @@ async def main_async():
     except Exception as e:
         logger.error(f"Failed to start HTTP server: {e}", exc_info=True)
         raise
+
+    # Start Unix socket site if enabled
+    if http_config.get("unix_socket_enabled", False):
+        unix_socket_path = http_config.get("unix_socket", "/dev/shm/zfs_api.sock")
+        try:
+            # Remove existing socket if it exists
+            if os.path.exists(unix_socket_path):
+                os.unlink(unix_socket_path)
+
+            unix_site = web.UnixSite(runner, unix_socket_path)
+            await unix_site.start()
+
+            # Set permissions to allow all users
+            os.chmod(unix_socket_path, 0o666)
+            logger.info(f"HTTP server started on Unix socket {unix_socket_path} (mode: 0666)")
+        except Exception as e:
+            logger.error(f"Failed to start HTTP Unix socket server: {e}", exc_info=True)
+            # Don't raise, TCP site is still working
     
     try:
         # DISABLED for debugging - just keep the event loop running

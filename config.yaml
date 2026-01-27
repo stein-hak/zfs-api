@@ -5,6 +5,8 @@ server:
   http:
     host: 0.0.0.0
     port: 8545
+    unix_socket: /dev/shm/zfs_api.sock
+    unix_socket_enabled: true
   
   # TCP Socket Configuration  
   tcp:

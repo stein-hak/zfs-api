@@ -5,6 +5,8 @@ server:
   http:
     host: 127.0.0.1  # Use 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces
     port: 8545
+    unix_socket: /dev/shm/zfs_api.sock  # Unix socket for HTTP API (faster local access)
+    unix_socket_enabled: true  # Enable Unix socket alongside TCP
 
   # TCP Socket Configuration
   tcp:
