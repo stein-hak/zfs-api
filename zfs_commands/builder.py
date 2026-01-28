@@ -61,6 +61,15 @@ class ZFSCommands:
         return ['zfs', 'mount', dataset]
 
     @staticmethod
+    def dataset_unmount(dataset: str, force: bool = False) -> List[str]:
+        """Build zfs unmount command"""
+        cmd = ['zfs', 'unmount']
+        if force:
+            cmd.append('-f')
+        cmd.append(dataset)
+        return cmd
+
+    @staticmethod
     def dataset_rename(old_name: str, new_name: str) -> List[str]:
         """Build zfs rename command"""
         return ['zfs', 'rename', old_name, new_name]

@@ -362,6 +362,31 @@ async def dataset_mount(context: Dict[str, Any], dataset: str) -> Result:
 
 @method
 @require_auth
+async def dataset_unmount(context: Dict[str, Any], dataset: str, force: bool = False) -> Result:
+    """Unmount a ZFS dataset"""
+    try:
+        api_requests.labels(method="dataset_unmount", status="started").inc()
+        result = await zfs.dataset_unmount(dataset, force)
+
+        if result.success:
+            api_requests.labels(method="dataset_unmount", status="success").inc()
+            return Success({"dataset": dataset, "unmounted": True})
+        else:
+            stderr_text = result.stderr.lower()
+            # Check if error is because it's not mounted
+            if 'not currently mounted' in stderr_text or 'not mounted' in stderr_text:
+                api_requests.labels(method="dataset_unmount", status="success").inc()
+                return Success({"dataset": dataset, "unmounted": True, "was_not_mounted": True})
+            else:
+                api_requests.labels(method="dataset_unmount", status="failed").inc()
+                return Error(-32021, f"Failed to unmount dataset: {result.stderr.strip()}")
+    except Exception as e:
+        api_requests.labels(method="dataset_unmount", status="error").inc()
+        logger.exception(f"Error unmounting dataset {dataset}")
+        return Error(-32022, str(e))
+
+@method
+@require_auth
 async def dataset_rename(context: Dict[str, Any], dataset: str, new_name: str) -> Result:
     """Rename a ZFS dataset"""
     try:

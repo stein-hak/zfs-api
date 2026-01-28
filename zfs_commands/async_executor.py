@@ -101,6 +101,11 @@ class AsyncZFS:
         cmd = self.commands.dataset_mount(dataset)
         return await self._execute(cmd)
 
+    async def dataset_unmount(self, dataset: str, force: bool = False) -> CommandResult:
+        """Unmount a ZFS dataset"""
+        cmd = self.commands.dataset_unmount(dataset, force)
+        return await self._execute(cmd)
+
     async def dataset_rename(self, old_name: str, new_name: str) -> CommandResult:
         """Rename a ZFS dataset"""
         cmd = self.commands.dataset_rename(old_name, new_name)
