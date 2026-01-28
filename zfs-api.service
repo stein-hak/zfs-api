@@ -7,15 +7,19 @@ Wants=redis.service
 Type=simple
 User=root
 Group=root
+MountFlags=shared
 WorkingDirectory=/opt/zfs-api
 Environment="PATH=/opt/zfs-api/venv/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStart=/opt/zfs-api/venv/bin/python /opt/zfs-api/zfs_api_server.py
 Restart=always
-RestartSec=10
+RestartSec=1
+KillMode=mixed
+TimeoutStopSec=10
+
 
 # Security options
-PrivateTmp=true
-NoNewPrivileges=true
+#PrivateTmp=true
+#NoNewPrivileges=false
 
 # Logging
 StandardOutput=journal
