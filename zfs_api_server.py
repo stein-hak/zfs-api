@@ -918,7 +918,8 @@ async def send_estimate(context: Dict[str, Any], dataset: str, snapshot: str,
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         
         stdout, stderr = await proc.communicate()
@@ -1049,7 +1050,8 @@ async def send_to_file(context: Dict[str, Any], dataset: str, snapshot: str,
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         
         # Start monitoring task
@@ -1113,7 +1115,8 @@ async def receive_from_file(context: Dict[str, Any], dataset: str, input_file: s
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         
         start_time = time.time()
@@ -1756,7 +1759,8 @@ async def handle_stream_send(request):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         
         # Stream data
@@ -1827,7 +1831,8 @@ async def handle_stream_receive(request):
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         
         # Stream data from request to ZFS
@@ -2043,7 +2048,8 @@ async def handle_upload_receive(request):
                 *decompress_cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=write_fd,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             
             # Close write end in parent
@@ -2054,7 +2060,8 @@ async def handle_upload_receive(request):
                 *zfs_cmd,
                 stdin=read_fd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             
             # Close read end in parent
@@ -2067,7 +2074,8 @@ async def handle_upload_receive(request):
                 *zfs_cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             decompress_proc = None
             target_stdin = zfs_proc.stdin
@@ -2180,7 +2188,8 @@ async def handle_download_send(request):
         check_result = await asyncio.create_subprocess_exec(
             *check_cmd,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
+            stderr=asyncio.subprocess.DEVNULL,
+            close_fds=True
         )
         await check_result.wait()
         
@@ -2194,7 +2203,8 @@ async def handle_download_send(request):
             check_result = await asyncio.create_subprocess_exec(
                 *check_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.DEVNULL,
+                close_fds=True
             )
             await check_result.wait()
             
@@ -2209,7 +2219,8 @@ async def handle_download_send(request):
             keystatus_result = await asyncio.create_subprocess_exec(
                 "zfs", "get", "-H", "-o", "value", "keystatus", dataset,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.DEVNULL,
+                close_fds=True
             )
             keystatus_output, _ = await keystatus_result.communicate()
             keystatus = keystatus_output.decode('utf-8').strip()
@@ -2220,12 +2231,13 @@ async def handle_download_send(request):
         if use_raw:
             zfs_cmd.append("-w")  # Send raw encrypted streams
             
-        # Auto-detect compressed flag if needed  
+        # Auto-detect compressed flag if needed
         if compressed == 'auto':
             compression_result = await asyncio.create_subprocess_exec(
                 "zfs", "get", "-H", "-o", "value", "compression", dataset,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.DEVNULL,
+                close_fds=True
             )
             compression_output, _ = await compression_result.communicate()
             compression_prop = compression_output.decode('utf-8').strip()
@@ -2284,7 +2296,8 @@ async def handle_download_send(request):
             zfs_proc = await asyncio.create_subprocess_exec(
                 *zfs_cmd,
                 stdout=write_fd,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             
             # Close write end in parent
@@ -2300,7 +2313,8 @@ async def handle_download_send(request):
                 *compress_cmd,
                 stdin=read_fd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             
             # Close read end in parent
@@ -2336,7 +2350,8 @@ async def handle_download_send(request):
             zfs_proc = await asyncio.create_subprocess_exec(
                 *zfs_cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True
             )
             
             # Stream data directly to client

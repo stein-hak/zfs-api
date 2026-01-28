@@ -22,7 +22,8 @@ class AsyncZFS:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
         stdout, stderr = await proc.communicate()
 
@@ -354,7 +355,8 @@ class AsyncZFS:
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
 
     async def send_estimate(self, dataset: str, snapshot: str,
@@ -389,7 +391,8 @@ class AsyncZFS:
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            close_fds=True
         )
 
     # ==================== DIAGNOSTIC OPERATIONS ====================

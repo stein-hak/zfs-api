@@ -248,7 +248,8 @@ class MigrateLauncher:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True  # Create new process group
+            start_new_session=True,  # Create new process group
+            close_fds=True
         )
         
         # Read stderr for pv output
