@@ -1625,7 +1625,12 @@ async def migration_estimate(context: Dict[str, Any], source: str, destination: 
             "incremental_bytes": None,
             "fast_forward_bytes": None,
             "full_bytes": None,
+            "resume_bytes": None,
         }
+
+        if resume_token:
+            # Remaining part of the interrupted stream, send flags come from the token
+            result["resume_bytes"] = await _send_size(["-t", resume_token])
 
         if common and common != latest:
             result["snapshots_behind"] = len(local_snaps) - 1 - local_snaps.index(common)

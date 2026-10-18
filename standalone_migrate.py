@@ -716,6 +716,26 @@ class zfs():
         else:
             return None
 
+    def get_resume_send_size(self, resume_token):
+        """
+        Get the estimated size of the remaining part of an interrupted send.
+
+        Args:
+            resume_token: receive_resume_token of the destination dataset
+
+        Returns:
+            The estimated size in bytes, or None if estimation fails
+        """
+        # Send flags (-c, -R, ...) are encoded in the token
+        out, err, rc = execute(['zfs', 'send', '-nP', '-t', resume_token])
+        if rc != 0:
+            return None
+        for line in reversed((out + err).splitlines()):
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == 'size':
+                return int(parts[1])
+        return None
+
     def conv_space(self, space):
         if space[-1] == 'K':
             return int(float(space[:-1].replace(',', '.')) * 1024)
@@ -973,7 +993,7 @@ class zfs():
                 logger.debug(f"Executing command: {' '.join(cmd)}")
             p = Popen(cmd, stdout=PIPE)
             send = p
-            size = None  # We don't know the size when resuming
+            size = self.get_resume_send_size(resume_token)  # Remaining part of the stream
         else:
             if use_native_compression:
                 # Use send method with native compression

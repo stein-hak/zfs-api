@@ -440,10 +440,11 @@ Estimate the next migration of a dataset to a remote host: find the latest commo
   "snapshots_behind": 34,
   "incremental_bytes": 324313682768,
   "fast_forward_bytes": 128485800040,
-  "full_bytes": null
+  "full_bytes": null,
+  "resume_bytes": null
 }
 ```
-`incremental_bytes`/`fast_forward_bytes` are set when there is a common snapshot behind the latest one, `full_bytes` when there is no common snapshot. `resume_token` is set when the destination holds a partially received stream.
+`incremental_bytes`/`fast_forward_bytes` are set when there is a common snapshot behind the latest one, `full_bytes` when there is no common snapshot. `resume_token` is set when the destination holds a partially received stream, `resume_bytes` is then the remaining size of that stream.
 
 ---
 
