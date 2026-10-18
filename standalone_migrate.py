@@ -560,7 +560,7 @@ class zfs():
                 holds[s] = hold
         return holds
 
-    def send(self, dataset, snap, snap1=None, recurse=False, use_native_compression=False):
+    def send(self, dataset, snap, snap1=None, recurse=False, use_native_compression=False, ff=False):
         """
         Generate a ZFS send command and return the process.
         
@@ -570,6 +570,8 @@ class zfs():
             snap1: The second snapshot name for incremental send
             recurse: Whether to do a recursive send
             use_native_compression: Whether to use ZFS native compression (-c flag)
+            ff: Fast-forward - send only the delta snap -> snap1 (-i) without
+                intermediate snapshots, instead of the full history (-I)
             
         Returns:
             A process object for the ZFS send command
@@ -603,7 +605,7 @@ class zfs():
                     cmd.append(dataset + '@' + snap)
                 else:
                     if snap1 in snaps:
-                        cmd.append('-I')
+                        cmd.append('-i' if ff else '-I')
                         cmd.append(dataset + '@' + snap)
                         cmd.append(dataset + '@' + snap1)
                     else:
@@ -614,7 +616,7 @@ class zfs():
         else:
             return None
 
-    def get_send_size(self, dataset, snap, snap1=None, recurse=False, use_native_compression=False):
+    def get_send_size(self, dataset, snap, snap1=None, recurse=False, use_native_compression=False, ff=False):
         """
         Get the estimated size of a ZFS send stream.
         
@@ -624,6 +626,7 @@ class zfs():
             snap1: The second snapshot name for incremental send
             recurse: Whether to do a recursive send
             use_native_compression: Whether to use ZFS native compression (-c flag)
+            ff: Fast-forward (-i instead of -I), see send()
             
         Returns:
             The estimated size in bytes, or None if estimation fails
@@ -659,7 +662,7 @@ class zfs():
                     cmd.append(dataset + '@' + snap)
                 else:
                     if snap1 in snaps:
-                        cmd.append('-I')
+                        cmd.append('-i' if ff else '-I')
                         cmd.append(dataset + '@' + snap)
                         cmd.append(dataset + '@' + snap1)
                     else:
@@ -894,7 +897,7 @@ class zfs():
             return recv_process
         
     def adaptive_send(self, dataset, snap, snap1=None, recurse=False, compression=None, verbose=False, machine_readable=False, limit=0,
-                      time=0, out_fd=None, use_native_compression=False, resume_token=None, progress_interval=10):
+                      time=0, out_fd=None, use_native_compression=False, resume_token=None, progress_interval=10, ff=False):
         """
         Send a ZFS snapshot with adaptive compression and progress visualization.
         
@@ -910,6 +913,7 @@ class zfs():
             out_fd: Output file descriptor
             use_native_compression: Whether to use ZFS native compression (-c flag)
             resume_token: Token to resume a previous send
+            ff: Fast-forward incremental send (-i instead of -I)
             
         Returns:
             Process object for the send operation
@@ -937,12 +941,12 @@ class zfs():
                     logger.info("Using ZFS native compression with -c flag")
                 
                 # Get estimated size and process with native compression
-                size = self.get_send_size(dataset, snap, snap1, recurse, use_native_compression=True)
-                send = self.send(dataset, snap, snap1, recurse, use_native_compression=True)
+                size = self.get_send_size(dataset, snap, snap1, recurse, use_native_compression=True, ff=ff)
+                send = self.send(dataset, snap, snap1, recurse, use_native_compression=True, ff=ff)
             else:
                 # Traditional send without native compression
-                size = self.get_send_size(dataset, snap, snap1, recurse, use_native_compression=False)
-                send = self.send(dataset, snap, snap1, recurse, use_native_compression=False)
+                size = self.get_send_size(dataset, snap, snap1, recurse, use_native_compression=False, ff=ff)
+                send = self.send(dataset, snap, snap1, recurse, use_native_compression=False, ff=ff)
 
         if send:
             if verbose and size:
@@ -1524,10 +1528,12 @@ class SSH:
 class ssh_send(SSH):
     def __init__(self, host, dataset=None, recv_dataset=None, snapshot=None, compress_type='auto',
                 limit=0, time=0, recurse=False, verbose=False, machine_readable=False, user='root', passwd=None,
-                oneshot=False, create_snapshot=False, update_bootfs=False, sync=False, reverse=False, progress_interval=10):
+                oneshot=False, create_snapshot=False, update_bootfs=False, sync=False, reverse=False, progress_interval=10,
+                ff=False):
         """Initialize SSH connection for sending ZFS datasets."""
         SSH.__init__(self, host=host, user=user, passwd=passwd)
 
+        self.ff = ff
         self.dataset = dataset
         self.recv_dataset = recv_dataset
         self.snapshot = snapshot
@@ -1916,8 +1922,7 @@ class ssh_send(SSH):
                 
                 if not send:
                     logger.error('Failed to create ZFS send process with resume token')
-                    return
-                
+                    return 1
                 if self.verbose:
                     logger.info(f"Using compression: {self.compress_type}")
                 
@@ -1985,12 +1990,13 @@ class ssh_send(SSH):
 
                         if snap != snap1:
                             if self.verbose:
-                                logger.info('Performing incremental send from %s to %s' % (snap, snap1))
+                                logger.info('Performing %s send from %s to %s' % ('fast-forward' if self.ff else 'incremental', snap, snap1))
 
                             send = self.zfs.adaptive_send(dataset=self.dataset, snap=snap, snap1=snap1, recurse=self.recurse,
                                                      verbose=self.verbose, compression=self.compress_type,
                                                      limit=self.limit, time=self.time, use_native_compression=self.use_native_compression,
-                                                     machine_readable=self.machine_readable, progress_interval=self.progress_interval)
+                                                     machine_readable=self.machine_readable, progress_interval=self.progress_interval,
+                                                     ff=self.ff)
 
                             if self.verbose:
                                 logger.info(f"Using compression: {self.compress_type} with pv for progress visualization")
@@ -2011,12 +2017,13 @@ class ssh_send(SSH):
 
                     if snap and snap1 and snap != snap1:
                         if self.verbose:
-                            logger.info('Performing incremental send from %s to %s' % (snap, snap1))
+                            logger.info('Performing %s send from %s to %s' % ('fast-forward' if self.ff else 'incremental', snap, snap1))
 
                         send = self.zfs.adaptive_send(dataset=self.dataset, snap=snap, snap1=snap1, recurse=self.recurse,
                                                  verbose=self.verbose, compression=self.compress_type,
                                                  limit=self.limit, time=self.time, use_native_compression=self.use_native_compression,
-                                                 machine_readable=self.machine_readable, progress_interval=self.progress_interval)
+                                                 machine_readable=self.machine_readable, progress_interval=self.progress_interval,
+                                                 ff=self.ff)
 
                         if self.verbose:
                             logger.info(f"Using compression: {self.compress_type} with pv for visualization")
@@ -2025,6 +2032,9 @@ class ssh_send(SSH):
 
                         logger.info("Waiting for receive to complete...")
                         recv.communicate()
+                        if recv.returncode != 0:
+                            logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                            return 1
 
                         if self.sync:
                             tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
@@ -2077,6 +2087,9 @@ class ssh_send(SSH):
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
                                 recv.communicate()
+                                if recv.returncode != 0:
+                                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                                    return 1
                                 
                                 if self.sync:
                                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
@@ -2102,7 +2115,7 @@ class ssh_send(SSH):
                                 # recv_snaps being empty despite is_zfs returning true means dataset exists but empty
                                 logger.error('No common snapshots found between source and destination datasets')
                                 logger.error('Cannot perform incremental send. Aborting.')
-                                return
+                                return 1
                         else:
                             if self.verbose:
                                 logger.info('Target dataset is up to date on %s' % snap)
@@ -2123,11 +2136,15 @@ class ssh_send(SSH):
                                                           verbose=self.verbose, compression=self.compress_type,
                                                           limit=self.limit, time=self.time,
                                                           use_native_compression=self.use_native_compression,
-                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval)
+                                                          machine_readable=self.machine_readable, progress_interval=self.progress_interval,
+                                                          ff=self.ff)
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
 
                                 recv.communicate()
+                                if recv.returncode != 0:
+                                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                                    return 1
 
                                 if self.sync:
                                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
@@ -2165,6 +2182,9 @@ class ssh_send(SSH):
                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression, dataset=self.recv_dataset)
 
                 recv.communicate()
+                if recv.returncode != 0:
+                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                    return 1
                 
                 if self.sync:
                     tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
@@ -2201,6 +2221,9 @@ class ssh_send(SSH):
                                                dataset=self.recv_dataset)
 
                         recv.communicate()
+                        if recv.returncode != 0:
+                            logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                            return 1
 
                         if self.sync:
                             tag = "sync" + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '_' + self.host
@@ -2248,6 +2271,9 @@ class ssh_send(SSH):
                                            
                     logger.info("Waiting for receive to complete...")
                     recv.communicate()
+                    if recv.returncode != 0:
+                        logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                        return 1
 
                     if self.oneshot:
                         if self.verbose:
@@ -3392,6 +3418,9 @@ def main():
     parser.add_argument('--snap_after', action='store_true', help='Create init snapshot for recv dataset')
     parser.add_argument('--update', action='store_true', help='Guess and update bootfs on remote host')
     parser.add_argument('--sync', action='store_true', help='Keep latest local snapshot for replication with given host')
+    parser.add_argument('--ff', action='store_true',
+                        help='Fast-forward: send only the delta from the common snapshot to the latest one (zfs send -i), '
+                             'skipping intermediate snapshots')
     parser.add_argument('--update_from_snap', help='Snapshot from which to create update file')
     # By default, the tool shows a progress bar with transfer statistics
     parser.add_argument('-q', '--quiet', action='store_true', default=False,
@@ -3560,6 +3589,7 @@ def main():
         # Use -r if specified, otherwise use destination remote  
         remotes = args.remote.split(',') if args.remote else [dest_remote]
         
+        result = 1
         for remote in remotes:
             sender = ssh_send(
                 host=remote,
@@ -3577,11 +3607,14 @@ def main():
                 recurse=args.recursive,
                 sync=args.sync,
                 passwd=passwd,
-                progress_interval=args.progress_interval
+                progress_interval=args.progress_interval,
+                ff=args.ff
             )
 
             if sender.state == 1:
                 result = sender.send_snapshot()
+            else:
+                logger.error(f"Source dataset {source_dataset} not found")
         if result != 0:
             return result
     

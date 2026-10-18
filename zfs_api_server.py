@@ -1445,7 +1445,7 @@ async def token_stats(context: Dict[str, Any]) -> Result:
 async def migration_create(context: Dict[str, Any], source: str, destination: str,
                           remote: Optional[str] = None, limit: Optional[int] = None,
                           compression: Optional[str] = None, recursive: bool = False,
-                          sync: bool = True) -> Result:
+                          sync: bool = True, fast_forward: bool = False) -> Result:
     """Create a new migration task
     
     Args:
@@ -1456,6 +1456,8 @@ async def migration_create(context: Dict[str, Any], source: str, destination: st
         compression: Compression type ('gzip', 'lz4', 'zstd', etc.)
         recursive: Include child datasets
         sync: Keep snapshots with holds for replication (default: True)
+        fast_forward: Send only the delta from the common snapshot to the latest
+            one (zfs send -i), skipping intermediate snapshots (default: False)
     """
     try:
         if not task_manager:
@@ -1471,6 +1473,8 @@ async def migration_create(context: Dict[str, Any], source: str, destination: st
             'sync': sync
         }
         
+        if fast_forward:
+            params['fast_forward'] = True
         if remote:
             params['remote'] = remote
         if limit:
@@ -1506,6 +1510,139 @@ async def migration_create(context: Dict[str, Any], source: str, destination: st
         api_requests.labels(method="migration_create", status="error").inc()
         logger.exception("Error creating migration")
         return Error(-32101, str(e))
+
+async def _run_cmd(*cmd: str, timeout: int = 120) -> Tuple[int, str, str]:
+    """Run a command and return (returncode, stdout, stderr)"""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        close_fds=True
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return -1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
+    return proc.returncode, stdout.decode('utf-8', 'replace'), stderr.decode('utf-8', 'replace')
+
+
+async def _send_size(args: List[str]) -> Optional[int]:
+    """Estimate zfs send stream size in bytes using parsable dry-run output"""
+    rc, out, err = await _run_cmd("zfs", "send", "-nP", *args)
+    if rc != 0:
+        logger.warning(f"zfs send -nP {' '.join(args)} failed: {err.strip()}")
+        return None
+    for line in reversed((out + err).splitlines()):
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == 'size':
+            return int(parts[1])
+    return None
+
+
+@method
+@require_auth
+async def migration_estimate(context: Dict[str, Any], source: str, destination: str,
+                             remote: str, recursive: bool = False,
+                             native_compressed: Optional[bool] = None) -> Result:
+    """Estimate the next migration of a dataset to a remote host
+
+    Finds the latest common snapshot with the remote destination and estimates the
+    stream size of a regular incremental send (-I, all intermediate snapshots) and of
+    a fast-forward send (-i, delta to the latest snapshot only).
+
+    Args:
+        source: Source dataset (pool/dataset, an @snapshot suffix is ignored)
+        destination: Destination dataset on the remote host
+        remote: Remote host
+        recursive: Estimate a recursive (-R) replication stream
+        native_compressed: Use native compression (-c); autodetected when omitted
+    """
+    try:
+        api_requests.labels(method="migration_estimate", status="started").inc()
+        dataset = source.split('@')[0]
+
+        rc, out, err = await _run_cmd(
+            "zfs", "list", "-H", "-t", "snapshot", "-o", "name", "-s", "creation", "-d", "1", dataset)
+        if rc != 0:
+            api_requests.labels(method="migration_estimate", status="failed").inc()
+            return Error(-32110, f"Failed to list local snapshots of {dataset}: {err.strip()}")
+        local_snaps = [l.split('@', 1)[1] for l in out.splitlines() if '@' in l]
+        if not local_snaps:
+            api_requests.labels(method="migration_estimate", status="failed").inc()
+            return Error(-32111, f"No snapshots on {dataset}")
+        latest = local_snaps[-1]
+
+        remote_script = (
+            f"zfs list -H -o name {destination} >/dev/null 2>&1 || {{ echo NODATASET; exit 0; }}; "
+            f"zfs get -H -o value receive_resume_token {destination}; "
+            f"zfs list -H -t snapshot -o name -s creation -d 1 {destination}"
+        )
+        rc, out, err = await _run_cmd(
+            "ssh", "-oStrictHostKeyChecking=no", "-oBatchMode=yes", "-oConnectTimeout=15",
+            f"root@{remote}", remote_script, timeout=60)
+        if rc != 0:
+            api_requests.labels(method="migration_estimate", status="failed").inc()
+            return Error(-32112, f"Failed to query {remote}:{destination}: {err.strip()}")
+
+        lines = out.splitlines()
+        remote_exists = not (lines and lines[0] == 'NODATASET')
+        resume_token = None
+        remote_snaps = []
+        if remote_exists and lines:
+            resume_token = lines[0] if lines[0] != '-' else None
+            remote_snaps = [l.split('@', 1)[1] for l in lines[1:] if '@' in l]
+
+        common = None
+        local_set = set(local_snaps)
+        for snap in reversed(remote_snaps):
+            if snap in local_set:
+                common = snap
+                break
+
+        use_compressed = native_compressed
+        if use_compressed is None:
+            rc, out, _ = await _run_cmd("zfs", "get", "-H", "-o", "value", "compression", dataset)
+            use_compressed = rc == 0 and out.strip() not in ('', 'off')
+
+        flags = []
+        if use_compressed:
+            flags.append("-c")
+        if recursive:
+            flags.append("-R")
+
+        result = {
+            "dataset": dataset,
+            "destination": destination,
+            "remote": remote,
+            "remote_exists": remote_exists,
+            "resume_token": resume_token,
+            "common_snapshot": common,
+            "latest_snapshot": latest,
+            "up_to_date": common == latest,
+            "snapshots_behind": None,
+            "incremental_bytes": None,
+            "fast_forward_bytes": None,
+            "full_bytes": None,
+        }
+
+        if common and common != latest:
+            result["snapshots_behind"] = len(local_snaps) - 1 - local_snaps.index(common)
+            result["incremental_bytes"] = await _send_size(
+                flags + ["-I", f"{dataset}@{common}", f"{dataset}@{latest}"])
+            result["fast_forward_bytes"] = await _send_size(
+                flags + ["-i", f"{dataset}@{common}", f"{dataset}@{latest}"])
+        elif not common:
+            result["full_bytes"] = await _send_size(flags + [f"{dataset}@{latest}"])
+
+        api_requests.labels(method="migration_estimate", status="success").inc()
+        return Success(result)
+
+    except Exception as e:
+        api_requests.labels(method="migration_estimate", status="error").inc()
+        logger.exception(f"Error estimating migration {source} -> {remote}:{destination}")
+        return Error(-32113, str(e))
 
 @method
 @require_auth
@@ -1545,12 +1682,11 @@ async def migration_list(context: Dict[str, Any], status: Optional[str] = None,
                     'progress': task.progress,
                     'params': task.params
                 })
-                
-                if len(tasks) >= limit:
-                    break
         
-        # Sort by created_at descending
+        # Sort by created_at descending, then apply limit (Redis key order is
+        # arbitrary, limiting first returns a random subset of tasks)
         tasks.sort(key=lambda t: t['created_at'], reverse=True)
+        tasks = tasks[:limit]
         
         api_requests.labels(method="migration_list", status="success").inc()
         return Success({

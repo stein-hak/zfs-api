@@ -386,6 +386,7 @@ Create a new migration task to transfer datasets between hosts.
 - `compression` (string, optional): Compression type ("gzip", "lz4", "zstd", etc.)
 - `recursive` (boolean, optional): Include child datasets (default: false)
 - `sync` (boolean, optional): Keep snapshots with holds for replication (default: true)
+- `fast_forward` (boolean, optional): Fast-forward the destination like `git merge --squash`: send only the delta from the latest common snapshot to the latest source snapshot (`zfs send -i`) instead of every intermediate snapshot (`zfs send -I`). The destination does not get the intermediate snapshots. Use `migration_estimate` to decide (default: false)
 
 **Returns:**
 ```json
@@ -412,6 +413,37 @@ Create a new migration task to transfer datasets between hosts.
   "id": 1
 }
 ```
+
+---
+
+#### migration_estimate
+Estimate the next migration of a dataset to a remote host: find the latest common snapshot and the stream sizes of a regular incremental and a fast-forward send.
+
+**Parameters:**
+- `source` (string, required): Source dataset (an `@snapshot` suffix is ignored)
+- `destination` (string, required): Destination dataset on the remote host
+- `remote` (string, required): Remote host
+- `recursive` (boolean, optional): Estimate a recursive (`-R`) stream (default: false)
+- `native_compressed` (boolean, optional): Use native compression (`-c`), autodetected from the dataset when omitted
+
+**Returns:**
+```json
+{
+  "dataset": "archive/virtual/1cv8_2",
+  "destination": "archive/virtual/1cv8_2",
+  "remote": "192.168.10.156",
+  "remote_exists": true,
+  "resume_token": null,
+  "common_snapshot": "monthly_backup_2026-05-01-00-00",
+  "latest_snapshot": "frequent_backup_2026-10-18-13-31",
+  "up_to_date": false,
+  "snapshots_behind": 34,
+  "incremental_bytes": 324313682768,
+  "fast_forward_bytes": 128485800040,
+  "full_bytes": null
+}
+```
+`incremental_bytes`/`fast_forward_bytes` are set when there is a common snapshot behind the latest one, `full_bytes` when there is no common snapshot. `resume_token` is set when the destination holds a partially received stream.
 
 ---
 

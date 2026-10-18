@@ -235,6 +235,10 @@ class AsyncReliableRedis:
         """Get the length of a list with automatic reconnection."""
         return await self.execute('llen', key)
     
+    async def lrange(self, key: str, start: int, end: int):
+        """Get a range of list elements with automatic reconnection."""
+        return await self.execute('lrange', key, start, end)
+
     async def keys(self, pattern: str = '*'):
         """Get keys matching pattern with automatic reconnection."""
         return await self.execute('keys', pattern)

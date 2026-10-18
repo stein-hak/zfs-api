@@ -184,12 +184,44 @@ class AsyncBackgroundTaskManager:
             
         self._running = True
         logger.info(f"Starting async background task manager with {self.max_workers} workers")
+
+        await self._recover_tasks()
         
         # Start worker tasks
         for i in range(self.max_workers):
             worker = asyncio.create_task(self._worker(i))
             self.workers.append(worker)
             
+    async def _recover_tasks(self):
+        """Fix up tasks left over from a previous run.
+
+        Tasks still marked running belonged to processes that died with the old
+        server and are marked failed. Pending tasks missing from the queue are
+        re-queued, otherwise they would never run and keep blocking new
+        migrations to the same destination.
+        """
+        try:
+            queued = await self.redis.lrange('zfs_migration_queue', 0, -1) or []
+            queued = {q.decode() if isinstance(q, bytes) else q for q in queued}
+            keys = await self.redis.keys('task:*') or []
+            for key in keys:
+                key = key.decode() if isinstance(key, bytes) else key
+                task_id = key.split(":", 1)[1]
+                task = await self.get_task(task_id)
+                if not task:
+                    continue
+                if task.status == TaskStatus.RUNNING:
+                    task.status = TaskStatus.FAILED
+                    task.completed_at = datetime.now(timezone.utc)
+                    task.error = "Interrupted: task was running when the server stopped"
+                    await self._save_task(task)
+                    logger.warning(f"Recovered task {task_id}: running -> failed (server restart)")
+                elif task.status == TaskStatus.PENDING and task_id not in queued:
+                    await self.redis.rpush('zfs_migration_queue', task_id)
+                    logger.warning(f"Recovered task {task_id}: pending but not queued -> re-queued")
+        except Exception as e:
+            logger.error(f"Task recovery failed: {e}", exc_info=True)
+
     async def stop(self):
         """Stop the background task manager"""
         if not self._running:
@@ -224,11 +256,10 @@ class AsyncBackgroundTaskManager:
         try:
             while self._running:
                 try:
-                    # Get task from queue (blocking with timeout)
-                    task_id = await asyncio.wait_for(
-                        self._get_next_task(),
-                        timeout=1.0
-                    )
+                    # Get task from queue. blpop already blocks with its own timeout;
+                    # wrapping it in asyncio.wait_for() can cancel the coroutine after
+                    # Redis has popped the item, which silently loses the task
+                    task_id = await self._get_next_task()
                     
                     if not task_id:
                         continue
@@ -370,6 +401,8 @@ async def handle_migration_task(task_id: str, params: Dict[str, Any],
         cmd.extend(['-c', params['compression']])
     if params.get('recursive'):
         cmd.append('--recursive')
+    if params.get('fast_forward'):
+        cmd.append('--ff')
     if params.get('sync', True):  # Default to True for sync
         cmd.append('--sync')
         logger.info(f"DEBUG: Added --sync to command")
