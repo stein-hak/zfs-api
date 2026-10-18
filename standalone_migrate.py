@@ -242,6 +242,46 @@ def uncompress_ssh_recv(fd, host, dataset, type=None, force=False, use_native_co
     else:
         return None
 
+def wait_recv(recv, what='Remote ZFS receive', max_lines=10):
+    """
+    Wait for a receive process started by uncompress_ssh_recv().
+
+    On failure log the last lines of its output (zfs recv messages go to stdout
+    via 2>&1, ssh errors to stderr) so the actual reason ends up in the
+    migration task error instead of just the return code.
+
+    Returns:
+        The process return code
+    """
+    stdout, stderr = recv.communicate()
+    rc = recv.returncode
+    if rc == 0:
+        return rc
+
+    def split(stream):
+        if isinstance(stream, bytes):
+            stream = stream.decode('utf-8', errors='replace')
+        return [l.strip() for l in (stream or '').splitlines() if l.strip()]
+
+    recv_lines, ssh_lines = split(stdout), split(stderr)
+    lines = (recv_lines + ssh_lines)[-max_lines:]
+
+    for line in lines:
+        logger.error(f"{what} output: {line}")
+
+    # Prefer zfs error messages over the generic last line (often ssh noise)
+    errors = [l for l in lines if any(k in l.lower() for k in ('cannot', 'error', 'failed', 'broken pipe'))]
+    if errors:
+        reason = errors[-1]
+    elif recv_lines or ssh_lines:
+        reason = (recv_lines or ssh_lines)[-1]
+    elif rc == 255:
+        reason = 'ssh connection failed'
+    else:
+        reason = 'no output'
+    logger.error(f"{what} failed with return code {rc}: {reason}")
+    return rc
+
 # ====== PV module ======
 def pv(fd, verbose=True, limit=0, size=0, time=0, shell=False, out_fd=None, file=None, machine_readable=False, update_interval=10):
     """
@@ -1929,15 +1969,10 @@ class ssh_send(SSH):
                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                        dataset=self.recv_dataset)
 
-                # Capture stdout and stderr to diagnose issues
-                stdout, stderr = recv.communicate()
-                rc = recv.returncode
+                # Logs the receive output on failure to diagnose issues
+                rc = wait_recv(recv, what='Resume receive')
                 if rc != 0:
                     logger.warning('Resuming interrupted send failed. Trying basic incremental send')
-                    if stdout:
-                        logger.info(f"Remote stdout: {stdout.decode('utf-8') if isinstance(stdout, bytes) else stdout}")
-                    if stderr:
-                        logger.error(f"Remote stderr: {stderr.decode('utf-8') if isinstance(stderr, bytes) else stderr}")
                     
                     # Get focused diagnostic information about the resume token
                     logger.info("Checking receive_resume_token...")
@@ -2003,9 +2038,7 @@ class ssh_send(SSH):
                                 
                             recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression, dataset=self.recv_dataset)
 
-                            recv.communicate()
-                            if recv.returncode != 0:
-                                logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                            if wait_recv(recv) != 0:
                                 return 1
 
             else:
@@ -2031,9 +2064,7 @@ class ssh_send(SSH):
                         recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression, dataset=self.recv_dataset)
 
                         logger.info("Waiting for receive to complete...")
-                        recv.communicate()
-                        if recv.returncode != 0:
-                            logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                        if wait_recv(recv) != 0:
                             return 1
 
                         if self.sync:
@@ -2086,9 +2117,7 @@ class ssh_send(SSH):
                                                           machine_readable=self.machine_readable, progress_interval=self.progress_interval)
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
-                                recv.communicate()
-                                if recv.returncode != 0:
-                                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                                if wait_recv(recv) != 0:
                                     return 1
                                 
                                 if self.sync:
@@ -2141,9 +2170,7 @@ class ssh_send(SSH):
                                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                        dataset=self.recv_dataset)
 
-                                recv.communicate()
-                                if recv.returncode != 0:
-                                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                                if wait_recv(recv) != 0:
                                     return 1
 
                                 if self.sync:
@@ -2181,9 +2208,7 @@ class ssh_send(SSH):
 
                 recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression, dataset=self.recv_dataset)
 
-                recv.communicate()
-                if recv.returncode != 0:
-                    logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                if wait_recv(recv) != 0:
                     return 1
                 
                 if self.sync:
@@ -2220,9 +2245,7 @@ class ssh_send(SSH):
                         recv = uncompress_ssh_recv(send.stdout, host=self.host, type=self.compress_type, use_native_compression=self.use_native_compression,
                                                dataset=self.recv_dataset)
 
-                        recv.communicate()
-                        if recv.returncode != 0:
-                            logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                        if wait_recv(recv) != 0:
                             return 1
 
                         if self.sync:
@@ -2270,9 +2293,7 @@ class ssh_send(SSH):
                                            dataset=self.recv_dataset)
                                            
                     logger.info("Waiting for receive to complete...")
-                    recv.communicate()
-                    if recv.returncode != 0:
-                        logger.error(f"Remote ZFS receive failed with return code {recv.returncode}")
+                    if wait_recv(recv) != 0:
                         return 1
 
                     if self.oneshot:
