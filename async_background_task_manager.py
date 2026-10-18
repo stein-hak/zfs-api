@@ -120,6 +120,9 @@ class AsyncBackgroundTaskManager:
             
         # If task is not running, check if it just completed with cancellation
         if task.status != TaskStatus.RUNNING:
+            if task.status == TaskStatus.CANCELLED:
+                logger.info(f"Task {task_id} was successfully cancelled")
+                return True
             # If it completed very recently (within 5 seconds) and has the cancelled flag, 
             # consider it a successful cancellation
             if (task.status == TaskStatus.COMPLETED and 
@@ -323,13 +326,16 @@ class AsyncBackgroundTaskManager:
             # Execute the handler
             result = await handler(task_id, task.params, self)
             
-            # Update task status to completed
-            task.status = TaskStatus.COMPLETED
+            # Update task status to completed (or cancelled if the handler was interrupted)
+            if isinstance(result, dict) and result.get('cancelled'):
+                task.status = TaskStatus.CANCELLED
+            else:
+                task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now(timezone.utc)
             task.result = result
             await self._save_task(task)
             
-            logger.info(f"Task {task_id} completed successfully")
+            logger.info(f"Task {task_id} {task.status.value}")
             
         except Exception as e:
             # Update task status to failed
